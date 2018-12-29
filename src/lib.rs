@@ -7,16 +7,26 @@ use std::sync::{Arc, Mutex};
 
 /// Trait for things you can turn into vector. Things you want to optimize with CMA-ES need to
 /// implement this.
+///
+/// This trait includes a Context type that can be used to pass auxiliary information to rebuild
+/// the structure.
+///
+/// Note that this library assumes that a context obtained from one instance can be applied safely
+/// to some copy of the original instance safely.
 pub trait Vectorizable {
-    fn to_vec(&self) -> Vec<f64>;
-    fn from_vec(vec: &[f64]) -> Self;
+    type Context;
+
+    fn to_vec(&self) -> (Vec<f64>, Self::Context);
+    fn from_vec(vec: &[f64], ctx: &Self::Context) -> Self;
 }
 
 impl Vectorizable for Vec<f64> {
-    fn to_vec(&self) -> Vec<f64> {
-        self.clone()
+    type Context = ();
+
+    fn to_vec(&self) -> (Vec<f64>, Self::Context) {
+        (self.clone(), ())
     }
-    fn from_vec(vec: &[f64]) -> Self {
+    fn from_vec(vec: &[f64], _: &Self::Context) -> Self {
         vec.to_owned()
     }
 }
@@ -175,11 +185,13 @@ extern "C" fn global_iterator(userdata: *const c_void) {
 /// }
 ///
 /// impl Vectorizable for TwoPoly {
-///     fn to_vec(&self) -> Vec<f64> {
-///         vec![self.x, self.y]
+///     type Context = ();
+///
+///     fn to_vec(&self) -> (Vec<f64>, Self::Context) {
+///         (vec![self.x, self.y], ())
 ///     }
 ///
-///     fn from_vec(vec: &[f64]) -> Self {
+///     fn from_vec(vec: &[f64], _: &Self::Context) -> Self {
 ///         TwoPoly {
 ///             x: vec[0],
 ///             y: vec[1],
@@ -243,15 +255,16 @@ where
 {
     let mut iterator = iterator;
     let best_so_far: Arc<Mutex<Option<(T, f64)>>> = Arc::new(Mutex::new(None));
+    let (mut initial_vec, ctx) = initial.to_vec();
 
     let call = |thing_vec| {
-        let score = evaluate(T::from_vec(thing_vec));
+        let score = evaluate(T::from_vec(thing_vec, &ctx));
         let mut bsf = best_so_far.lock().unwrap();
         match *bsf {
-            None => *bsf = Some((T::from_vec(thing_vec), score)),
+            None => *bsf = Some((T::from_vec(thing_vec, &ctx), score)),
             Some((_, old_score)) => {
                 if old_score >= score {
-                    *bsf = Some((T::from_vec(thing_vec), score));
+                    *bsf = Some((T::from_vec(thing_vec, &ctx), score));
                 }
             }
         }
@@ -263,7 +276,6 @@ where
         Some(ref mut iterator_fun) => iterator_fun(),
     };
 
-    let mut initial_vec = initial.to_vec();
     let vec_ptr: *mut f64 = initial_vec.as_mut_ptr();
 
     let userdata = Userdata {
@@ -307,11 +319,13 @@ mod tests {
     }
 
     impl Vectorizable for TwoPoly {
-        fn to_vec(&self) -> Vec<f64> {
-            vec![self.x, self.y]
+        type Context = ();
+
+        fn to_vec(&self) -> (Vec<f64>, Self::Context) {
+            (vec![self.x, self.y], ())
         }
 
-        fn from_vec(vec: &[f64]) -> Self {
+        fn from_vec(vec: &[f64], _: &Self::Context) -> Self {
             TwoPoly {
                 x: vec[0],
                 y: vec[1],

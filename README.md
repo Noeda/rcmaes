@@ -28,11 +28,13 @@ struct TwoPoly {
 // Vectorizable is essential to specify how to turn something into a Vec<f64>
 // and back.
 impl Vectorizable for TwoPoly {
-    fn to_vec(&self) -> Vec<f64> {
-        vec![self.x, self.y]
+    type Context = ();
+
+    fn to_vec(&self) -> (Vec<f64>, Self::Context) {
+        (vec![self.x, self.y], ())
     }
 
-    fn from_vec(vec: &[f64]) -> Self {
+    fn from_vec(vec: &[f64], _: &Self::Context) -> Self {
         TwoPoly {
             x: vec[0],
             y: vec[1],
