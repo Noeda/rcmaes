@@ -12,6 +12,15 @@ pub trait Vectorizable {
     fn from_vec(vec: &[f64]) -> Self;
 }
 
+impl Vectorizable for Vec<f64> {
+    fn to_vec(&self) -> Vec<f64> {
+        self.clone()
+    }
+    fn from_vec(vec: &[f64]) -> Self {
+        vec.to_owned()
+    }
+}
+
 /// This enumerates each variant of CMA-ES algorithm supported by libcmaes.
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CMAESAlgo {
