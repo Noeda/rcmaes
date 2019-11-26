@@ -3,7 +3,7 @@ extern crate libc;
 mod raw;
 
 use libc::{c_double, c_int, c_void};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Trait for things you can turn into vector. Things you want to optimize with CMA-ES need to
 /// implement this.
@@ -139,8 +139,8 @@ impl Default for CMAESParameters {
 }
 
 pub struct Userdata<'a> {
-    evaluate: Box<Fn(&'a [f64]) -> f64 + 'a>,
-    iterate: Box<FnMut() -> () + 'a>,
+    evaluate: Box<dyn Fn(&'a [f64]) -> f64 + 'a>,
+    iterate: Box<dyn FnMut() -> () + 'a>,
     d: usize,
 }
 
@@ -224,7 +224,8 @@ where
 
 /// Same as optimize() but also calls a function just before generating a new population.
 ///
-/// This can be useful if you have some kind of randomized evaluation environment (e.g. simulation)
+/// This can be useful if you have some kind of randomized evaluation environment (e.g. simulation,
+/// but you may want optimize_with_batch instead if your situation is like that))
 /// and you want to evaluate each candidate solution on the same environment each round. You can
 /// use the iterate function to generate a new environment
 #[inline]
@@ -240,6 +241,34 @@ where
     I: FnMut(),
 {
     optimize_raw(initial, params, evaluate, Some(iterator))
+}
+
+/// Same as optimize_with_iterate but eva
+pub fn optimize_with_batch<T, F, I, B>(
+    initial: &T,
+    params: &CMAESParameters,
+    evaluate: F,
+    mut make_batch: I,
+) -> Option<(T, f64)>
+where
+    T: Vectorizable + Clone,
+    F: Fn(&B, T) -> f64,
+    I: FnMut() -> B,
+{
+    let last_batch = RwLock::new(make_batch());
+
+    optimize_raw(
+        initial,
+        params,
+        |item| {
+            let lb = last_batch.read().unwrap();
+            evaluate(&*lb, item)
+        },
+        Some(|| {
+            let mut lb = last_batch.write().unwrap();
+            *lb = make_batch();
+        }),
+    )
 }
 
 fn optimize_raw<T, F, I>(
