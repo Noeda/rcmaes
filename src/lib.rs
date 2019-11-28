@@ -20,6 +20,30 @@ pub trait Vectorizable {
     fn from_vec(vec: &[f64], ctx: &Self::Context) -> Self;
 }
 
+/// This structure contains some metadata about learning in last iteration of CMA-ES population.
+///
+/// Useful for displaying things.
+#[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
+pub struct IterationReport {
+    best_score: f64,
+    worst_score: f64,
+    average_score: f64,
+}
+
+impl IterationReport {
+    pub fn best_score(&self) -> f64 {
+        self.best_score
+    }
+
+    pub fn worst_score(&self) -> f64 {
+        self.worst_score
+    }
+
+    pub fn average_score(&self) -> f64 {
+        self.average_score
+    }
+}
+
 impl Vectorizable for Vec<f64> {
     type Context = ();
 
@@ -218,7 +242,7 @@ where
     T: Vectorizable + Clone,
     F: Fn(T) -> f64,
 {
-    let it: Option<fn() -> ()> = None;
+    let it: Option<fn(IterationReport) -> ()> = None;
     optimize_raw(initial, params, evaluate, it)
 }
 
@@ -238,12 +262,12 @@ pub fn optimize_with_iterate<T, F, I>(
 where
     T: Vectorizable + Clone,
     F: Fn(T) -> f64,
-    I: FnMut(),
+    I: FnMut(IterationReport),
 {
     optimize_raw(initial, params, evaluate, Some(iterator))
 }
 
-/// Same as optimize_with_iterate but eva
+/// Same as optimize_with_iterate but some batch stuff.
 pub fn optimize_with_batch<T, F, I, B>(
     initial: &T,
     params: &CMAESParameters,
@@ -253,9 +277,13 @@ pub fn optimize_with_batch<T, F, I, B>(
 where
     T: Vectorizable + Clone,
     F: Fn(&B, T) -> f64,
-    I: FnMut() -> B,
+    I: FnMut(IterationReport) -> B,
 {
-    let last_batch = RwLock::new(make_batch());
+    let last_batch = RwLock::new(make_batch(IterationReport {
+        best_score: 0.0,
+        worst_score: 0.0,
+        average_score: 0.0,
+    }));
 
     optimize_raw(
         initial,
@@ -264,9 +292,9 @@ where
             let lb = last_batch.read().unwrap();
             evaluate(&*lb, item)
         },
-        Some(|| {
+        Some(|iteration_report| {
             let mut lb = last_batch.write().unwrap();
-            *lb = make_batch();
+            *lb = make_batch(iteration_report);
         }),
     )
 }
@@ -280,14 +308,36 @@ fn optimize_raw<T, F, I>(
 where
     T: Vectorizable + Clone,
     F: Fn(T) -> f64,
-    I: FnMut(),
+    I: FnMut(IterationReport),
 {
     let mut iterator = iterator;
     let best_so_far: Arc<Mutex<Option<(T, f64)>>> = Arc::new(Mutex::new(None));
     let (mut initial_vec, ctx) = initial.to_vec();
 
+    let best_score_seen_in_last_batch: Arc<Mutex<f64>> =
+        Arc::new(Mutex::new(100000000000000000000.0));
+    let worst_score_seen_in_last_batch: Arc<Mutex<f64>> =
+        Arc::new(Mutex::new(-100000000000000000000.0));
+    let total_score_seen_in_last_batch: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
+
     let call = |thing_vec| {
         let score = evaluate(T::from_vec(thing_vec, &ctx));
+        {
+            let mut sc = best_score_seen_in_last_batch.lock().unwrap();
+            if *sc > score {
+                *sc = score;
+            }
+        }
+        {
+            let mut sc = worst_score_seen_in_last_batch.lock().unwrap();
+            if *sc < score {
+                *sc = score;
+            }
+        }
+        {
+            let mut sc = total_score_seen_in_last_batch.lock().unwrap();
+            *sc += score;
+        }
         let mut bsf = best_so_far.lock().unwrap();
         match *bsf {
             None => *bsf = Some((T::from_vec(thing_vec, &ctx), score)),
@@ -300,9 +350,33 @@ where
         score
     };
 
-    let it = || match iterator {
-        None => (),
-        Some(ref mut iterator_fun) => iterator_fun(),
+    let it = || {
+        let average_score;
+        {
+            let mut sc = total_score_seen_in_last_batch.lock().unwrap();
+            average_score = *sc / params.pop_size() as f64;
+            *sc = 0.0;
+        }
+        let best_score;
+        {
+            let mut sc = best_score_seen_in_last_batch.lock().unwrap();
+            best_score = *sc;
+            *sc = 10000000000000000000.0;
+        }
+        let worst_score;
+        {
+            let mut sc = worst_score_seen_in_last_batch.lock().unwrap();
+            worst_score = *sc;
+            *sc = -10000000000000000000.0;
+        }
+        match iterator {
+            None => (),
+            Some(ref mut iterator_fun) => iterator_fun(IterationReport {
+                best_score,
+                worst_score,
+                average_score,
+            }),
+        };
     };
 
     let vec_ptr: *mut f64 = initial_vec.as_mut_ptr();
