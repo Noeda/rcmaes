@@ -317,8 +317,8 @@ where
     let best_so_far: Arc<Mutex<Option<(T, f64)>>> = Arc::new(Mutex::new(None));
     let (mut initial_vec, ctx) = initial.to_vec();
 
-    let best_score_seen_in_last_batch: Arc<Mutex<(f64, Option<T>)>> =
-        Arc::new(Mutex::new((100000000000000000000.0, None)));
+    let best_score_seen_in_last_batch: Arc<Mutex<(f64, T)>> =
+        Arc::new(Mutex::new((100000000000000000000.0, initial.clone())));
     let worst_score_seen_in_last_batch: Arc<Mutex<f64>> =
         Arc::new(Mutex::new(-100000000000000000000.0));
     let total_score_seen_in_last_batch: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
@@ -329,7 +329,7 @@ where
         {
             let mut sc = best_score_seen_in_last_batch.lock().unwrap();
             if sc.0 > score {
-                *sc = (score, Some(model.clone()));
+                *sc = (score, model.clone());
             }
         }
         {
@@ -365,7 +365,7 @@ where
         {
             let mut sc = best_score_seen_in_last_batch.lock().unwrap();
             best_score = sc.clone();
-            *sc = (10000000000000000000.0, None);
+            *sc = (10000000000000000000.0, initial.clone());
         }
         let worst_score;
         {
@@ -381,7 +381,7 @@ where
                     worst_score,
                     average_score,
                 },
-                best_score.1.expect("Population size not zero"),
+                best_score.1,
             ),
         };
     };
