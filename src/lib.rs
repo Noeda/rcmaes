@@ -242,7 +242,7 @@ where
     T: Vectorizable + Clone,
     F: Fn(T) -> f64,
 {
-    let it: Option<fn(IterationReport) -> ()> = None;
+    let it: Option<fn(IterationReport, T) -> ()> = None;
     optimize_raw(initial, params, evaluate, it)
 }
 
@@ -262,7 +262,7 @@ pub fn optimize_with_iterate<T, F, I>(
 where
     T: Vectorizable + Clone,
     F: Fn(T) -> f64,
-    I: FnMut(IterationReport),
+    I: FnMut(IterationReport, T),
 {
     optimize_raw(initial, params, evaluate, Some(iterator))
 }
@@ -277,13 +277,16 @@ pub fn optimize_with_batch<T, F, I, B>(
 where
     T: Vectorizable + Clone,
     F: Fn(&B, T) -> f64,
-    I: FnMut(IterationReport) -> B,
+    I: FnMut(IterationReport, T) -> B,
 {
-    let last_batch = RwLock::new(make_batch(IterationReport {
-        best_score: 0.0,
-        worst_score: 0.0,
-        average_score: 0.0,
-    }));
+    let last_batch = RwLock::new(make_batch(
+        IterationReport {
+            best_score: 0.0,
+            worst_score: 0.0,
+            average_score: 0.0,
+        },
+        initial.clone(),
+    ));
 
     optimize_raw(
         initial,
@@ -292,9 +295,9 @@ where
             let lb = last_batch.read().unwrap();
             evaluate(&*lb, item)
         },
-        Some(|iteration_report| {
+        Some(|iteration_report, model| {
             let mut lb = last_batch.write().unwrap();
-            *lb = make_batch(iteration_report);
+            *lb = make_batch(iteration_report, model);
         }),
     )
 }
@@ -308,24 +311,25 @@ fn optimize_raw<T, F, I>(
 where
     T: Vectorizable + Clone,
     F: Fn(T) -> f64,
-    I: FnMut(IterationReport),
+    I: FnMut(IterationReport, T),
 {
     let mut iterator = iterator;
     let best_so_far: Arc<Mutex<Option<(T, f64)>>> = Arc::new(Mutex::new(None));
     let (mut initial_vec, ctx) = initial.to_vec();
 
-    let best_score_seen_in_last_batch: Arc<Mutex<f64>> =
-        Arc::new(Mutex::new(100000000000000000000.0));
+    let best_score_seen_in_last_batch: Arc<Mutex<(f64, Option<T>)>> =
+        Arc::new(Mutex::new((100000000000000000000.0, None)));
     let worst_score_seen_in_last_batch: Arc<Mutex<f64>> =
         Arc::new(Mutex::new(-100000000000000000000.0));
     let total_score_seen_in_last_batch: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
 
     let call = |thing_vec| {
-        let score = evaluate(T::from_vec(thing_vec, &ctx));
+        let model = T::from_vec(thing_vec, &ctx);
+        let score = evaluate(model.clone());
         {
             let mut sc = best_score_seen_in_last_batch.lock().unwrap();
-            if *sc > score {
-                *sc = score;
+            if sc.0 > score {
+                *sc = (score, Some(model.clone()));
             }
         }
         {
@@ -360,8 +364,8 @@ where
         let best_score;
         {
             let mut sc = best_score_seen_in_last_batch.lock().unwrap();
-            best_score = *sc;
-            *sc = 10000000000000000000.0;
+            best_score = sc.clone();
+            *sc = (10000000000000000000.0, None);
         }
         let worst_score;
         {
@@ -371,11 +375,14 @@ where
         }
         match iterator {
             None => (),
-            Some(ref mut iterator_fun) => iterator_fun(IterationReport {
-                best_score,
-                worst_score,
-                average_score,
-            }),
+            Some(ref mut iterator_fun) => iterator_fun(
+                IterationReport {
+                    best_score: best_score.0,
+                    worst_score,
+                    average_score,
+                },
+                best_score.1.expect("Population size not zero"),
+            ),
         };
     };
 
