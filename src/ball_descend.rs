@@ -11,6 +11,8 @@ pub struct BallDescendParameters {
     trials_per_sigma: usize,
     diff_cutoff: f64,
     learning_rate: f64,
+    sigma_upper_bound: f64,
+    sigma_lower_bound: f64,
     report_to_stdout: bool,
 }
 
@@ -18,6 +20,8 @@ impl Default for BallDescendParameters {
     fn default() -> Self {
         BallDescendParameters {
             sigma: 1.0,
+            sigma_upper_bound: 100.0,
+            sigma_lower_bound: 0.0001,
             trials_per_sigma: 8,
             diff_cutoff: 32.0,
             learning_rate: 0.1,
@@ -37,6 +41,22 @@ impl BallDescendParameters {
 
     pub fn set_sigma(&mut self, sigma: f64) {
         self.sigma = sigma;
+    }
+
+    pub fn sigma_upper_bound(&self) -> f64 {
+        self.sigma_upper_bound
+    }
+
+    pub fn set_sigma_upper_bound(&mut self, sigma_upper_bound: f64) {
+        self.sigma_upper_bound = sigma_upper_bound;
+    }
+
+    pub fn sigma_lower_bound(&self) -> f64 {
+        self.sigma_lower_bound
+    }
+
+    pub fn set_sigma_lower_bound(&mut self, sigma_lower_bound: f64) {
+        self.sigma_lower_bound = sigma_lower_bound;
     }
 
     pub fn trials_per_sigma(&self) -> usize {
@@ -226,6 +246,13 @@ where
                 * ((ups / total) * (sigma * 2.0)
                     + (basics / total) * sigma
                     + (downs / total) * (sigma * 0.5));
+
+        if sigma > params.sigma_upper_bound() {
+            sigma = params.sigma_upper_bound();
+        }
+        if sigma < params.sigma_lower_bound() {
+            sigma = params.sigma_lower_bound();
+        }
 
         last_iteration_score = total_score / num_perturbations as f64;
         if params.report_to_stdout() {
