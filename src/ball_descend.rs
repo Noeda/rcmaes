@@ -188,6 +188,7 @@ where
             .collect();
 
         let mut total_score: f64 = 0.0;
+        let perturbations_len = perturbations.len();
         let mut perbs = Vec::with_capacity(perturbations.len());
         for (item, score) in perturbations.into_iter() {
             total_score += score;
@@ -196,7 +197,7 @@ where
             }
         }
         if perbs.len() > 0 {
-            total_score = total_score / perbs.len() as f64;
+            total_score = total_score / perturbations_len as f64;
             last_iteration_score = total_score;
         } else {
             last_iteration_score = 0.0;
