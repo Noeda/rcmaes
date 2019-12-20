@@ -195,6 +195,12 @@ where
                 perbs.push(item);
             }
         }
+        if perbs.len() > 0 {
+            total_score = total_score / perbs.len() as f64;
+            last_iteration_score = total_score;
+        } else {
+            last_iteration_score = 0.0;
+        }
         let mut perturbations = perbs;
 
         let num_perturbations = perturbations.len();
@@ -254,11 +260,10 @@ where
             sigma = params.sigma_lower_bound();
         }
 
-        last_iteration_score = total_score / num_perturbations as f64;
         if params.report_to_stdout() {
             println!(
                 "Sigma: {}, ups {} basics {} downs {} score {}",
-                sigma, ups, basics, downs, last_iteration_score
+                sigma, ups, basics, downs, total_score
             );
         }
     }
