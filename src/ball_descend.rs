@@ -109,14 +109,13 @@ where
         let ups = AtomicUsize::new(0);
         let downs = AtomicUsize::new(0);
 
-        let mut perturbations: Vec<(Vec<f64>, f64)> = batch
+        let perturbations: Vec<(Option<Vec<f64>>, f64)> = batch
             .par_bridge()
-            .filter_map(|item| {
+            .map(|item| {
                 let initial_score = evaluate(item.clone(), &last_iteration_best);
 
                 let mut candidate = None;
                 let mut diff = 1.0;
-                let score = initial_score;
                 loop {
                     let mut tries: usize = params.trials_per_sigma();
 
@@ -151,19 +150,32 @@ where
                     if candidate.is_none() {
                         diff *= 2.0;
                         if diff >= params.diff_cutoff() {
-                            return None;
+                            return (None, initial_score);
                         }
                         continue;
                     }
                     break;
                 }
 
-                Some((
-                    quantify_perturbation(&last_iteration_best, &candidate.unwrap()),
-                    score,
-                ))
+                (
+                    Some(quantify_perturbation(
+                        &last_iteration_best,
+                        &candidate.unwrap(),
+                    )),
+                    initial_score,
+                )
             })
             .collect();
+
+        let mut total_score: f64 = 0.0;
+        let mut perbs = Vec::with_capacity(perturbations.len());
+        for (item, score) in perturbations.into_iter() {
+            total_score += score;
+            if let Some(item) = item {
+                perbs.push(item);
+            }
+        }
+        let mut perturbations = perbs;
 
         let num_perturbations = perturbations.len();
         if num_perturbations == 0 {
@@ -178,11 +190,9 @@ where
         // things we are summing over.
         perturbations.shuffle(&mut rand::thread_rng());
 
-        let mut averaged_perturbations = vec![0.0; perturbations[0].0.len()];
-        let mut total_score: f64 = 0.0;
-        for (vec, score) in perturbations.into_iter() {
+        let mut averaged_perturbations = vec![0.0; perturbations[0].len()];
+        for vec in perturbations.into_iter() {
             assert_eq!(vec.len(), averaged_perturbations.len());
-            total_score += score;
             for idx in 0..vec.len() {
                 averaged_perturbations[idx] += vec[idx];
             }
