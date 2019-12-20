@@ -9,4 +9,6 @@ fn main() {
         .flag("-I/usr/local/include/eigen3")
         .flag("-I/usr/local/include/libcmaes")
         .compile("librcmaesglue.a");
+    // Hack to convince rust to link to cmaes with Cargo.
+    println!("cargo:rustc-link-lib=dylib=cmaes");
 }

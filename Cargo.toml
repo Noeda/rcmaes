@@ -3,9 +3,13 @@ name = "rcmaes"
 version = "0.1.0"
 authors = ["Mikko Juola <mikjuo@gmail.com>"]
 edition = "2018"
+links = "cmaes"
 
 [dependencies]
 libc = "0.2"
+rayon = "1.2"
+rand = "0.7"
+rand_distr = "0.2"
 
 [build-dependencies]
 cc = "1.0"

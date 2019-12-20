@@ -1,24 +1,17 @@
 extern crate libc;
+extern crate rand;
+extern crate rand_distr;
+extern crate rayon;
 
-mod raw;
+pub mod raw;
+
+pub mod ball_descend;
+pub mod vectorizable;
+
+pub use vectorizable::Vectorizable;
 
 use libc::{c_double, c_int, c_void};
 use std::sync::{Arc, Mutex, RwLock};
-
-/// Trait for things you can turn into vector. Things you want to optimize with CMA-ES need to
-/// implement this.
-///
-/// This trait includes a Context type that can be used to pass auxiliary information to rebuild
-/// the structure.
-///
-/// Note that this library assumes that a context obtained from one instance can be applied safely
-/// to some copy of the original instance safely.
-pub trait Vectorizable {
-    type Context;
-
-    fn to_vec(&self) -> (Vec<f64>, Self::Context);
-    fn from_vec(vec: &[f64], ctx: &Self::Context) -> Self;
-}
 
 /// This structure contains some metadata about learning in last iteration of CMA-ES population.
 ///
@@ -329,7 +322,7 @@ where
         {
             let mut sc = best_score_seen_in_last_batch.lock().unwrap();
             if sc.0 > score {
-                *sc = (score, model.clone());
+                *sc = (score, model);
             }
         }
         {
@@ -394,7 +387,7 @@ where
         iterate: Box::new(it),
     };
 
-    if initial_vec.len() == 0 {
+    if initial_vec.is_empty() {
         return None;
     }
 
@@ -462,7 +455,7 @@ mod tests {
             &TwoPoly { x: 5.0, y: 6.0 },
             &CMAESParameters::default(),
             |twopoly| (twopoly.x - 25.0).abs() + (twopoly.y - 1.0).abs(),
-            || val += 1,
+            |_, _| val += 1,
         )
         .unwrap();
         assert!((optimized.0.x - 25.0).abs() < 0.00001);
