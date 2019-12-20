@@ -10,6 +10,7 @@ pub struct BallDescendParameters {
     sigma: f64,
     trials_per_sigma: usize,
     diff_cutoff: f64,
+    learning_rate: f64,
     report_to_stdout: bool,
 }
 
@@ -19,6 +20,7 @@ impl Default for BallDescendParameters {
             sigma: 1.0,
             trials_per_sigma: 8,
             diff_cutoff: 32.0,
+            learning_rate: 0.1,
             report_to_stdout: false,
         }
     }
@@ -51,6 +53,14 @@ impl BallDescendParameters {
 
     pub fn set_diff_cutoff(&mut self, diff_cutoff: f64) {
         self.diff_cutoff = diff_cutoff;
+    }
+
+    pub fn learning_rate(&self) -> f64 {
+        self.learning_rate
+    }
+
+    pub fn set_learning_rate(&mut self, learning_rate: f64) {
+        self.learning_rate = learning_rate;
     }
 
     pub fn report_to_stdout(&self) -> bool {
@@ -106,7 +116,7 @@ where
 
                 let mut candidate = None;
                 let mut diff = 1.0;
-                let mut score = 0.0;
+                let score = initial_score;
                 loop {
                     let mut tries: usize = params.trials_per_sigma();
 
@@ -121,7 +131,6 @@ where
                             } else {
                                 basics.fetch_add(1, Ordering::Relaxed);
                             }
-                            score = perturbed_score_up;
                             break;
                         }
                         let perturbed_down =
@@ -134,7 +143,6 @@ where
                             } else {
                                 basics.fetch_add(1, Ordering::Relaxed);
                             }
-                            score = perturbed_score_down;
                             break;
                         }
                         tries -= 1;
@@ -186,7 +194,8 @@ where
         let (mut last_iteration_vec, ctx) = last_iteration_best.to_vec();
         assert_eq!(last_iteration_vec.len(), averaged_perturbations.len());
         for idx in 0..averaged_perturbations.len() {
-            last_iteration_vec[idx] += averaged_perturbations[idx];
+            last_iteration_vec[idx] += (last_iteration_vec[idx] * (1.0 - params.learning_rate()))
+                + (averaged_perturbations[idx] * params.learning_rate());
         }
         last_iteration_best = T::from_vec(&last_iteration_vec, &ctx);
 
