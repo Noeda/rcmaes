@@ -71,7 +71,7 @@ pub fn optimize_with_batch<T, F, I, B>(
 where
     T: Vectorizable + Clone + Sync + Send,
     F: Fn(B::Item, &T) -> f64 + Sync,
-    I: FnMut(T) -> B,
+    I: FnMut(T, f64) -> B,
     B: Iterator + rayon::iter::ParallelBridge,
     B::Item: Send + Sync + Clone,
     rayon::iter::IterBridge<B>: rayon::iter::ParallelIterator<Item = B::Item>,
@@ -89,22 +89,24 @@ where
     };
 
     let mut last_iteration_best = initial.clone();
+    let mut last_iteration_score = 0.0;
     let mut sigma = params.sigma();
 
     loop {
-        let batch = make_batch(last_iteration_best.clone());
+        let batch = make_batch(last_iteration_best.clone(), last_iteration_score);
 
         let basics = AtomicUsize::new(0);
         let ups = AtomicUsize::new(0);
         let downs = AtomicUsize::new(0);
 
-        let mut perturbations: Vec<Vec<f64>> = batch
+        let mut perturbations: Vec<(Vec<f64>, f64)> = batch
             .par_bridge()
             .filter_map(|item| {
                 let initial_score = evaluate(item.clone(), &last_iteration_best);
 
                 let mut candidate = None;
                 let mut diff = 1.0;
+                let mut score = 0.0;
                 loop {
                     let mut tries: usize = params.trials_per_sigma();
 
@@ -119,6 +121,7 @@ where
                             } else {
                                 basics.fetch_add(1, Ordering::Relaxed);
                             }
+                            score = perturbed_score_up;
                             break;
                         }
                         let perturbed_down =
@@ -131,6 +134,7 @@ where
                             } else {
                                 basics.fetch_add(1, Ordering::Relaxed);
                             }
+                            score = perturbed_score_down;
                             break;
                         }
                         tries -= 1;
@@ -146,9 +150,9 @@ where
                     break;
                 }
 
-                Some(quantify_perturbation(
-                    &last_iteration_best,
-                    &candidate.unwrap(),
+                Some((
+                    quantify_perturbation(&last_iteration_best, &candidate.unwrap()),
+                    score,
                 ))
             })
             .collect();
@@ -166,9 +170,11 @@ where
         // things we are summing over.
         perturbations.shuffle(&mut rand::thread_rng());
 
-        let mut averaged_perturbations = vec![0.0; perturbations[0].len()];
-        for vec in perturbations.into_iter() {
+        let mut averaged_perturbations = vec![0.0; perturbations[0].0.len()];
+        let mut total_score: f64 = 0.0;
+        for (vec, score) in perturbations.into_iter() {
             assert_eq!(vec.len(), averaged_perturbations.len());
+            total_score += score;
             for idx in 0..vec.len() {
                 averaged_perturbations[idx] += vec[idx];
             }
@@ -202,10 +208,11 @@ where
                     + (basics / total) * sigma
                     + (downs / total) * (sigma * 0.5));
 
+        last_iteration_score = total_score / num_perturbations as f64;
         if params.report_to_stdout() {
             println!(
-                "Sigma: {}, ups {} basics {} downs {}",
-                sigma, ups, basics, downs
+                "Sigma: {}, ups {} basics {} downs {} score {}",
+                sigma, ups, basics, downs, last_iteration_score
             );
         }
     }
@@ -258,7 +265,7 @@ mod tests {
             &TwoPoly { x: 5.0, y: 6.0 },
             params,
             |_, twopoly| (twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(),
-            |_| vec![0 as usize].into_iter(),
+            |_, _| vec![0 as usize].into_iter(),
         );
         assert!((optimized.x - 2.0).abs() < 0.00001);
         assert!((optimized.y - 8.0).abs() < 0.00001);
