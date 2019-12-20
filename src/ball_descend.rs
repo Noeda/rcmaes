@@ -70,10 +70,10 @@ pub fn optimize_with_batch<T, F, I, B>(
 ) -> T
 where
     T: Vectorizable + Clone + Sync + Send,
-    F: Fn(&B::Item, &T) -> f64 + Sync,
+    F: Fn(B::Item, &T) -> f64 + Sync,
     I: FnMut(T) -> B,
     B: Iterator + rayon::iter::ParallelBridge,
-    B::Item: Send,
+    B::Item: Send + Sync + Clone,
     rayon::iter::IterBridge<B>: rayon::iter::ParallelIterator<Item = B::Item>,
 {
     let make_perturbed_candidate = |m: &T, sigma: f64| -> T {
@@ -101,7 +101,7 @@ where
         let mut perturbations: Vec<Vec<f64>> = batch
             .par_bridge()
             .filter_map(|item| {
-                let initial_score = evaluate(&item, &last_iteration_best);
+                let initial_score = evaluate(item.clone(), &last_iteration_best);
 
                 let mut candidate = None;
                 let mut diff = 1.0;
@@ -111,7 +111,7 @@ where
                     while tries > 0 {
                         let perturbed_up =
                             make_perturbed_candidate(&last_iteration_best, sigma * diff);
-                        let perturbed_score_up = evaluate(&item, &perturbed_up);
+                        let perturbed_score_up = evaluate(item.clone(), &perturbed_up);
                         if perturbed_score_up < initial_score {
                             candidate = Some(perturbed_up);
                             if diff != 1.0 {
@@ -123,7 +123,7 @@ where
                         }
                         let perturbed_down =
                             make_perturbed_candidate(&last_iteration_best, sigma * (1.0 / diff));
-                        let perturbed_score_down = evaluate(&item, &perturbed_down);
+                        let perturbed_score_down = evaluate(item.clone(), &perturbed_down);
                         if perturbed_score_down < initial_score {
                             candidate = Some(perturbed_down);
                             if diff != 1.0 {
