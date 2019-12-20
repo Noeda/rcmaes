@@ -184,17 +184,23 @@ where
         }
         last_iteration_best = T::from_vec(&last_iteration_vec, &ctx);
 
-        // If 75% of best iterations were high sigma/low sigma, then adjust it
-        let ups = ups.load(Ordering::Relaxed);
-        let downs = downs.load(Ordering::Relaxed);
-        let basics = basics.load(Ordering::Relaxed);
-
+        let ups = ups.load(Ordering::Relaxed) as f64;
+        let downs = downs.load(Ordering::Relaxed) as f64;
+        let basics = basics.load(Ordering::Relaxed) as f64;
         let total = ups + downs + basics;
-        if ups > total * 3 / 4 {
-            sigma *= 2.0;
-        } else if downs > total * 3 / 4 {
-            sigma *= 0.5;
-        }
+
+        // Compute adjustment of sigma:
+        //
+        // high basics == sigma is just right at the moment
+        // high ups == sigma is too low
+        // high downs == sigma is too high
+        //
+
+        sigma = sigma * 0.1
+            + 0.9
+                * ((ups / total) * (sigma * 2.0)
+                    + (basics / total) * sigma
+                    + (downs / total) * (sigma * 0.5));
 
         if params.report_to_stdout() {
             println!(
