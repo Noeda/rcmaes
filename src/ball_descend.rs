@@ -1,31 +1,34 @@
-use rand::prelude::SliceRandom;
+/// https://arxiv.org/abs/1911.06317
+/// Gradientless Descent: High-Dimensional Zeroth-Order Optimization
+/// Daniel Golovin, John Karro, Greg Kochanski, Chansoo Lee, Xingyou Song, Qiuyi Zhang
+///
+/// No idea if the implementation is entirely correct. Use at your own risk. It does empirically
+/// work though.
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
-use std::sync::atomic::*;
 
 use crate::vectorizable::Vectorizable;
 
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy)]
 pub struct BallDescendParameters {
-    sigma: f64,
-    trials_per_sigma: usize,
-    diff_cutoff: f64,
-    learning_rate: f64,
-    sigma_upper_bound: f64,
-    sigma_lower_bound: f64,
+    sigma_maximum: f64,
+    sigma_minimum: f64,
+    epochs: Option<u64>,
     report_to_stdout: bool,
+
+    condition_number_bound: f64,
+    use_fast_variant: bool,
 }
 
 impl Default for BallDescendParameters {
     fn default() -> Self {
         BallDescendParameters {
-            sigma: 1.0,
-            sigma_upper_bound: 100.0,
-            sigma_lower_bound: 0.0001,
-            trials_per_sigma: 8,
-            diff_cutoff: 32.0,
-            learning_rate: 0.1,
+            sigma_maximum: 10.0,
+            sigma_minimum: 0.0001,
+            condition_number_bound: 10.0,
             report_to_stdout: false,
+            epochs: None,
+            use_fast_variant: true,
         }
     }
 }
@@ -35,52 +38,20 @@ impl BallDescendParameters {
         Self::default()
     }
 
-    pub fn sigma(&self) -> f64 {
-        self.sigma
+    pub fn sigma_maximum(&self) -> f64 {
+        self.sigma_maximum
     }
 
-    pub fn set_sigma(&mut self, sigma: f64) {
-        self.sigma = sigma;
+    pub fn set_sigma_maximum(&mut self, sigma_maximum: f64) {
+        self.sigma_maximum = sigma_maximum;
     }
 
-    pub fn sigma_upper_bound(&self) -> f64 {
-        self.sigma_upper_bound
+    pub fn sigma_minimum(&self) -> f64 {
+        self.sigma_minimum
     }
 
-    pub fn set_sigma_upper_bound(&mut self, sigma_upper_bound: f64) {
-        self.sigma_upper_bound = sigma_upper_bound;
-    }
-
-    pub fn sigma_lower_bound(&self) -> f64 {
-        self.sigma_lower_bound
-    }
-
-    pub fn set_sigma_lower_bound(&mut self, sigma_lower_bound: f64) {
-        self.sigma_lower_bound = sigma_lower_bound;
-    }
-
-    pub fn trials_per_sigma(&self) -> usize {
-        self.trials_per_sigma
-    }
-
-    pub fn set_trials_per_sigma(&mut self, trials: usize) {
-        self.trials_per_sigma = trials;
-    }
-
-    pub fn diff_cutoff(&self) -> f64 {
-        self.diff_cutoff
-    }
-
-    pub fn set_diff_cutoff(&mut self, diff_cutoff: f64) {
-        self.diff_cutoff = diff_cutoff;
-    }
-
-    pub fn learning_rate(&self) -> f64 {
-        self.learning_rate
-    }
-
-    pub fn set_learning_rate(&mut self, learning_rate: f64) {
-        self.learning_rate = learning_rate;
+    pub fn set_sigma_minimum(&mut self, sigma_minimum: f64) {
+        self.sigma_minimum = sigma_minimum;
     }
 
     pub fn report_to_stdout(&self) -> bool {
@@ -89,6 +60,30 @@ impl BallDescendParameters {
 
     pub fn set_report_to_stdout(&mut self, report: bool) {
         self.report_to_stdout = report;
+    }
+
+    pub fn epochs(&self) -> Option<u64> {
+        self.epochs
+    }
+
+    pub fn set_epochs(&mut self, epochs: Option<u64>) {
+        self.epochs = epochs;
+    }
+
+    pub fn use_fast_variant(&self) -> bool {
+        self.use_fast_variant
+    }
+
+    pub fn set_use_fast_variant(&mut self, use_fast_variant: bool) {
+        self.use_fast_variant = use_fast_variant;
+    }
+
+    pub fn condition_number_bound(&self) -> f64 {
+        self.condition_number_bound
+    }
+
+    pub fn set_condition_number_bound(&mut self, condition_number_bound: f64) {
+        self.condition_number_bound = condition_number_bound;
     }
 }
 
@@ -100,11 +95,9 @@ pub fn optimize_with_batch<T, F, I, B>(
 ) -> T
 where
     T: Vectorizable + Clone + Sync + Send,
-    F: Fn(B::Item, &T) -> f64 + Sync,
+    F: Fn(&B, &T) -> f64 + Sync,
     I: FnMut(T, f64) -> B,
-    B: Iterator + rayon::iter::ParallelBridge,
-    B::Item: Send + Sync + Clone,
-    rayon::iter::IterBridge<B>: rayon::iter::ParallelIterator<Item = B::Item>,
+    B: Send + Sync,
 {
     let make_perturbed_candidate = |m: &T, sigma: f64| -> T {
         let (mut t_as_vec, t_ctx) = m.to_vec();
@@ -119,169 +112,75 @@ where
     };
 
     let mut last_iteration_best = initial.clone();
-    let mut last_iteration_score = 0.0;
-    let mut sigma = params.sigma();
+    let mut last_iteration_score = None;
+    let mut sigma_maximum = params.sigma_maximum();
+    let sigma_minimum = params.sigma_minimum();
+
+    let mut epochs: u64 = 0;
+
+    let (vec, _) = initial.to_vec();
+
+    #[allow(non_snake_case)]
+    let H: u64 = ((vec.len() as f64)
+        * params.condition_number_bound()
+        * params.condition_number_bound().ln().ceil()) as u64;
+    std::mem::drop(vec);
 
     loop {
-        let batch = make_batch(last_iteration_best.clone(), last_iteration_score);
+        if params.use_fast_variant() && (epochs + 1) % H == 0 {
+            sigma_maximum *= 0.5;
+        }
+        let test_item = make_batch(
+            last_iteration_best.clone(),
+            last_iteration_score.unwrap_or(0.0),
+        );
 
-        let basics = AtomicUsize::new(0);
-        let ups = AtomicUsize::new(0);
-        let downs = AtomicUsize::new(0);
+        #[allow(non_snake_case)]
+        let K = if params.use_fast_variant() {
+            ((4.0 as f64) * params.condition_number_bound().sqrt())
+                .ln()
+                .ceil() as i64
+        } else {
+            (sigma_maximum / sigma_minimum).ln().ceil() as i64
+        };
 
-        let perturbations: Vec<(Option<Vec<f64>>, f64)> = batch
-            .par_bridge()
-            .map(|item| {
-                let initial_score = evaluate(item.clone(), &last_iteration_best);
+        let krange: Vec<i64> = if params.use_fast_variant() {
+            (-K..=K).collect()
+        } else {
+            (0..=K).collect()
+        };
 
-                let mut candidate = None;
-                let mut diff = 1.0;
-                loop {
-                    let mut tries: usize = params.trials_per_sigma();
-
-                    while tries > 0 {
-                        let perturbed_up =
-                            make_perturbed_candidate(&last_iteration_best, sigma * diff);
-                        let perturbed_score_up = evaluate(item.clone(), &perturbed_up);
-                        if perturbed_score_up < initial_score {
-                            candidate = Some(perturbed_up);
-                            if diff != 1.0 {
-                                ups.fetch_add(1, Ordering::Relaxed);
-                            } else {
-                                basics.fetch_add(1, Ordering::Relaxed);
-                            }
-                            break;
-                        }
-                        let perturbed_down =
-                            make_perturbed_candidate(&last_iteration_best, sigma * (1.0 / diff));
-                        let perturbed_score_down = evaluate(item.clone(), &perturbed_down);
-                        if perturbed_score_down < initial_score {
-                            candidate = Some(perturbed_down);
-                            if diff != 1.0 {
-                                downs.fetch_add(1, Ordering::Relaxed);
-                            } else {
-                                basics.fetch_add(1, Ordering::Relaxed);
-                            }
-                            break;
-                        }
-                        tries -= 1;
-                    }
-
-                    if candidate.is_none() {
-                        diff *= 2.0;
-                        if diff >= params.diff_cutoff() {
-                            return (None, initial_score);
-                        }
-                        continue;
-                    }
-                    break;
+        let evaluations: Vec<(T, f64)> = krange
+            .par_iter()
+            .filter_map(|k| {
+                let s = (2.0 as f64).powf(-((*k) as f64)) * sigma_maximum;
+                let perturbed = make_perturbed_candidate(&last_iteration_best, s);
+                let perturbed_score = evaluate(&test_item, &perturbed);
+                if Some(perturbed_score) < last_iteration_score || last_iteration_score.is_none() {
+                    Some((perturbed, perturbed_score))
+                } else {
+                    None
                 }
-
-                (
-                    Some(quantify_perturbation(
-                        &last_iteration_best,
-                        &candidate.unwrap(),
-                    )),
-                    initial_score,
-                )
             })
             .collect();
 
-        let mut total_score: f64 = 0.0;
-        let perturbations_len = perturbations.len();
-        let mut perbs = Vec::with_capacity(perturbations.len());
-        for (item, score) in perturbations.into_iter() {
-            total_score += score;
-            if let Some(item) = item {
-                perbs.push(item);
+        for (candidate_model, candidate_score) in evaluations.into_iter() {
+            if last_iteration_score.is_none() || Some(candidate_score) < last_iteration_score {
+                last_iteration_best = candidate_model;
+                last_iteration_score = Some(candidate_score);
             }
-        }
-        if perbs.len() > 0 {
-            total_score = total_score / perturbations_len as f64;
-            last_iteration_score = total_score;
-        } else {
-            last_iteration_score = 0.0;
-        }
-        let mut perturbations = perbs;
-
-        let num_perturbations = perturbations.len();
-        if num_perturbations == 0 {
-            return last_iteration_best;
-        }
-
-        // Since we are summing a whole lot of floating point numbers together, we should do some
-        // mitigation over biasing for items that appear first in the list.
-        //
-        // Floating point values start decreasing in precision once you start summing small numbers
-        // to big numbers. We still have a naive summing algorithm but we'll at least shuffle the
-        // things we are summing over.
-        perturbations.shuffle(&mut rand::thread_rng());
-
-        let mut averaged_perturbations = vec![0.0; perturbations[0].len()];
-        for vec in perturbations.into_iter() {
-            assert_eq!(vec.len(), averaged_perturbations.len());
-            for idx in 0..vec.len() {
-                averaged_perturbations[idx] += vec[idx];
-            }
-        }
-        for x in averaged_perturbations.iter_mut() {
-            *x /= num_perturbations as f64;
-        }
-
-        let (mut last_iteration_vec, ctx) = last_iteration_best.to_vec();
-        assert_eq!(last_iteration_vec.len(), averaged_perturbations.len());
-        for idx in 0..averaged_perturbations.len() {
-            last_iteration_vec[idx] += (last_iteration_vec[idx] * (1.0 - params.learning_rate()))
-                + (averaged_perturbations[idx] * params.learning_rate());
-        }
-        last_iteration_best = T::from_vec(&last_iteration_vec, &ctx);
-
-        let ups = ups.load(Ordering::Relaxed) as f64;
-        let downs = downs.load(Ordering::Relaxed) as f64;
-        let basics = basics.load(Ordering::Relaxed) as f64;
-        let total = ups + downs + basics;
-
-        // Compute adjustment of sigma:
-        //
-        // high basics == sigma is just right at the moment
-        // high ups == sigma is too low
-        // high downs == sigma is too high
-        //
-
-        sigma = sigma * 0.1
-            + 0.9
-                * ((ups / total) * (sigma * 2.0)
-                    + (basics / total) * sigma
-                    + (downs / total) * (sigma * 0.5));
-
-        if sigma > params.sigma_upper_bound() {
-            sigma = params.sigma_upper_bound();
-        }
-        if sigma < params.sigma_lower_bound() {
-            sigma = params.sigma_lower_bound();
         }
 
         if params.report_to_stdout() {
-            println!(
-                "Sigma: {}, ups {} basics {} downs {} score {}",
-                sigma, ups, basics, downs, total_score
-            );
+            println!("Current score: {:?} Epoch {}", last_iteration_score, epochs);
+        }
+        epochs += 1;
+        if params.epochs().is_some() && Some(epochs) >= params.epochs() {
+            break;
         }
     }
-}
 
-fn quantify_perturbation<T: Vectorizable>(first: &T, second: &T) -> Vec<f64> {
-    let (vec1, _) = first.to_vec();
-    let (vec2, _) = second.to_vec();
-
-    assert_eq!(vec1.len(), vec2.len());
-
-    let mut vec3 = Vec::with_capacity(vec1.len());
-
-    for idx in 0..vec1.len() {
-        vec3.push(vec2[idx] - vec1[idx]);
-    }
-    vec3
+    last_iteration_best
 }
 
 mod tests {
@@ -311,15 +210,29 @@ mod tests {
     #[test]
     pub fn test_2polynomial() {
         let mut params = BallDescendParameters::default();
-        params.set_trials_per_sigma(20);
-        params.set_diff_cutoff(256.0);
+        params.set_epochs(Some(1000));
         let optimized = optimize_with_batch(
             &TwoPoly { x: 5.0, y: 6.0 },
             params,
             |_, twopoly| (twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(),
             |_, _| vec![0 as usize].into_iter(),
         );
-        assert!((optimized.x - 2.0).abs() < 0.00001);
-        assert!((optimized.y - 8.0).abs() < 0.00001);
+        assert!((optimized.x - 2.0).abs() < 0.001);
+        assert!((optimized.y - 8.0).abs() < 0.001);
+    }
+
+    #[test]
+    pub fn test_2polynomial_fast_variant() {
+        let mut params = BallDescendParameters::default();
+        params.set_epochs(Some(1000));
+        params.set_use_fast_variant(true);
+        let optimized = optimize_with_batch(
+            &TwoPoly { x: 5.0, y: 6.0 },
+            params,
+            |_, twopoly| (twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(),
+            |_, _| vec![0 as usize].into_iter(),
+        );
+        assert!((optimized.x - 2.0).abs() < 0.001);
+        assert!((optimized.y - 8.0).abs() < 0.001);
     }
 }
