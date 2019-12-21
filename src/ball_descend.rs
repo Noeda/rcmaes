@@ -172,7 +172,17 @@ where
         }
 
         if params.report_to_stdout() {
-            println!("Current score: {:?} Epoch {}", last_iteration_score, epochs);
+            if params.use_fast_variant() {
+                println!(
+                    "Current score: {:?} Epoch {} H {} K {} sigma_maximum {}",
+                    last_iteration_score, epochs, H, K, sigma_maximum
+                );
+            } else {
+                println!(
+                    "Current score: {:?} Epoch {} K {}",
+                    last_iteration_score, epochs, K
+                );
+            }
         }
         epochs += 1;
         if params.epochs().is_some() && Some(epochs) >= params.epochs() {
