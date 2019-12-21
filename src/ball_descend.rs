@@ -134,6 +134,7 @@ where
             last_iteration_best.clone(),
             last_iteration_score.unwrap_or(0.0),
         );
+        last_iteration_score = Some(evaluate(&test_item, &last_iteration_best));
 
         #[allow(non_snake_case)]
         let K = if params.use_fast_variant() {
