@@ -110,6 +110,11 @@ pub struct CMAESParameters {
     m_use_surrogates: bool,
 }
 
+/// Returns a suggested population size by dimension.
+pub fn suggested_pop_size_by_dimension(dimension: usize) -> usize {
+    4 + (3.0 * (dimension as f64)).ln().floor() as usize
+}
+
 impl CMAESParameters {
     pub fn pop_size(&self) -> usize {
         self.m_pop_size
