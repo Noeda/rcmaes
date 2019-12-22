@@ -5,6 +5,7 @@ use libc::{c_double, c_int, c_void};
 #[link(name = "cmaes")]
 extern "C" {
     pub fn cmaes_optimize(
+        use_elitism: c_int,
         use_surrogates: c_int,
         algo: c_int,
         initial: *mut c_double,

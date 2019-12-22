@@ -108,6 +108,7 @@ pub struct CMAESParameters {
     m_sigma: f64,
     m_algo: CMAESAlgo,
     m_use_surrogates: bool,
+    m_use_elitism: bool,
 }
 
 /// Returns a suggested population size by dimension.
@@ -147,6 +148,14 @@ impl CMAESParameters {
     pub fn set_use_surrogates(&mut self, surrogates: bool) {
         self.m_use_surrogates = surrogates;
     }
+
+    pub fn use_elitism(&self) -> bool {
+        self.m_use_elitism
+    }
+
+    pub fn set_use_elitism(&mut self, elitism: bool) {
+        self.m_use_elitism = elitism;
+    }
 }
 
 impl Default for CMAESParameters {
@@ -156,6 +165,7 @@ impl Default for CMAESParameters {
             m_algo: CMAESAlgo::Default,
             m_sigma: 1.0,
             m_use_surrogates: false,
+            m_use_elitism: false,
         }
     }
 }
@@ -398,6 +408,7 @@ where
 
     unsafe {
         raw::cmaes_optimize(
+            if params.m_use_elitism { 1 } else { 0 },
             if params.m_use_surrogates { 1 } else { 0 },
             params.algo().to_c_int(),
             vec_ptr,

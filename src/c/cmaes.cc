@@ -8,7 +8,7 @@
 using namespace libcmaes;
 
 extern "C" {
-    void cmaes_optimize(int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*), void (*iterator)(void*), void* userdata);
+    void cmaes_optimize(int use_elitism, int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*), void (*iterator)(void*), void* userdata);
 }
 
 #define defconst(v) \
@@ -33,7 +33,7 @@ defconst(VD_CMAES);
 defconst(VD_IPOP_CMAES);
 defconst(VD_BIPOP_CMAES);
 
-void cmaes_optimize(int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*), void (*iter)(void*), void* userdata)
+void cmaes_optimize(int use_elitism, int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*), void (*iter)(void*), void* userdata)
 {
     FitFunc fit = [&evaluate, &userdata](const double* params, const int N) {
         ((void) N);
@@ -57,6 +57,9 @@ void cmaes_optimize(int use_surrogates, int algo, double* initial, double sigma,
     CMAParameters<> cmaparams(x0, sigma, lambda);
     cmaparams.set_algo(algo);
     cmaparams.set_mt_feval(true);
+    if (use_elitism) {
+        cmaparams.set_elitism(1);
+    }
 
     std::vector<double> out;
     if ( use_surrogates ) {
