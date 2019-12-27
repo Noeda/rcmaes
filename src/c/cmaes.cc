@@ -1,8 +1,8 @@
 #include <vector>
 #include "libcmaes/cmaes.h"
-#include "libcmaes/surrcmaes.h"
 #include "libcmaes/surrogates/rankingsvm.hpp"
 #include "libcmaes/surrogates/rsvm_surr_strategy.hpp"
+#include "surrcmaes_glue.h"
 #include <stdint.h>
 
 using namespace libcmaes;
@@ -63,7 +63,7 @@ void cmaes_optimize(int use_elitism, int use_surrogates, int algo, double* initi
 
     std::vector<double> out;
     if ( use_surrogates ) {
-        CMASolutions cmasols = surrcmaes<>(fit, cmaparams);
+        CMASolutions cmasols = surrcmaes<>(fit, cmaparams, pfunc);
         cmasols.sort_candidates();
         out = cmasols.best_candidate().get_x();
     } else {
