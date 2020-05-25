@@ -68,6 +68,13 @@ pub enum CMAESAlgo {
     VDBIPOP,
 }
 
+/// Should we stop or continue training?
+#[derive(Eq, Ord, PartialEq, PartialOrd, Debug, Clone, Copy)]
+pub enum CMAESContinue {
+    Stop,
+    Continue,
+}
+
 impl CMAESAlgo {
     fn to_c_int(self) -> c_int {
         unsafe {
@@ -191,7 +198,7 @@ impl Default for CMAESParameters {
 }
 
 pub struct Userdata<'a> {
-    evaluate: Box<dyn Fn(&'a [f64]) -> f64 + 'a>,
+    evaluate: Box<dyn Fn(&'a [f64]) -> (f64, CMAESContinue) + 'a>,
     iterate: Box<dyn FnMut() -> () + 'a>,
     d: usize,
 }
@@ -200,6 +207,7 @@ extern "C" fn global_evaluate(
     candidate: *const c_double,
     _: *const c_int,
     userdata: *const c_void,
+    stop: *mut c_int,
 ) -> f64 {
     unsafe {
         let userdata_ptr: *const Userdata = userdata as *const Userdata;
@@ -208,7 +216,11 @@ extern "C" fn global_evaluate(
             vec.push(*candidate.offset(i as isize));
         }
         let ev = &(*userdata_ptr).evaluate;
-        ev(&vec)
+        let (result, should_stop) = ev(&vec);
+        if should_stop == CMAESContinue::Stop {
+            *stop = 1;
+        }
+        result
     }
 }
 
@@ -227,7 +239,7 @@ extern "C" fn global_iterator(userdata: *const c_void) {
 /// ```
 /// extern crate rcmaes;
 ///
-/// use rcmaes::{optimize, CMAESParameters, Vectorizable};
+/// use rcmaes::{optimize, CMAESParameters, Vectorizable, CMAESContinue};
 ///
 /// // This example "trains" a very simple model to go to point (2, 8)
 /// #[derive(Clone)]
@@ -256,7 +268,7 @@ extern "C" fn global_iterator(userdata: *const c_void) {
 ///     let optimized = optimize(
 ///         &TwoPoly { x: 5.0, y: 6.0 },
 ///         &CMAESParameters::default(),
-///         |twopoly| (twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(),
+///         |twopoly| ((twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(), CMAESContinue::Continue),
 ///     ).unwrap();
 ///
 ///     let model = optimized.0;
@@ -268,7 +280,7 @@ extern "C" fn global_iterator(userdata: *const c_void) {
 pub fn optimize<T, F>(initial: &T, params: &CMAESParameters, evaluate: F) -> Option<(T, f64)>
 where
     T: Vectorizable + Clone,
-    F: Fn(T) -> f64,
+    F: Fn(T) -> (f64, CMAESContinue),
 {
     let it: Option<fn(IterationReport, T) -> ()> = None;
     optimize_raw(initial, params, evaluate, it)
@@ -289,7 +301,7 @@ pub fn optimize_with_iterate<T, F, I>(
 ) -> Option<(T, f64)>
 where
     T: Vectorizable + Clone,
-    F: Fn(T) -> f64,
+    F: Fn(T) -> (f64, CMAESContinue),
     I: FnMut(IterationReport, T),
 {
     optimize_raw(initial, params, evaluate, Some(iterator))
@@ -304,7 +316,7 @@ pub fn optimize_with_batch<T, F, I, B>(
 ) -> Option<(T, f64)>
 where
     T: Vectorizable + Clone,
-    F: Fn(&B, T) -> f64,
+    F: Fn(&B, T) -> (f64, CMAESContinue),
     I: FnMut(IterationReport, T) -> B,
 {
     let last_batch = RwLock::new(make_batch(
@@ -338,7 +350,7 @@ fn optimize_raw<T, F, I>(
 ) -> Option<(T, f64)>
 where
     T: Vectorizable + Clone,
-    F: Fn(T) -> f64,
+    F: Fn(T) -> (f64, CMAESContinue),
     I: FnMut(IterationReport, T),
 {
     let mut iterator = iterator;
@@ -353,7 +365,7 @@ where
 
     let call = |thing_vec| {
         let model = T::from_vec(thing_vec, &ctx);
-        let score = evaluate(model.clone());
+        let (score, stop) = evaluate(model.clone());
         {
             let mut sc = best_score_seen_in_last_batch.lock().unwrap();
             if sc.0 > score {
@@ -379,7 +391,7 @@ where
                 }
             }
         }
-        score
+        (score, stop)
     };
 
     let it = || {
@@ -479,7 +491,12 @@ mod tests {
         let optimized = optimize(
             &TwoPoly { x: 5.0, y: 6.0 },
             &CMAESParameters::default(),
-            |twopoly| (twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(),
+            |twopoly| {
+                (
+                    (twopoly.x - 2.0).abs() + (twopoly.y - 8.0).abs(),
+                    CMAESContinue::Continue,
+                )
+            },
         )
         .unwrap();
         assert!((optimized.0.x - 2.0).abs() < 0.00001);
@@ -492,12 +509,36 @@ mod tests {
         let optimized = optimize_with_iterate(
             &TwoPoly { x: 5.0, y: 6.0 },
             &CMAESParameters::default(),
-            |twopoly| (twopoly.x - 25.0).abs() + (twopoly.y - 1.0).abs(),
+            |twopoly| {
+                (
+                    (twopoly.x - 25.0).abs() + (twopoly.y - 1.0).abs(),
+                    CMAESContinue::Continue,
+                )
+            },
             |_, _| val += 1,
         )
         .unwrap();
         assert!((optimized.0.x - 25.0).abs() < 0.00001);
         assert!((optimized.0.y - 1.0).abs() < 0.00001);
         assert!(val > 0);
+    }
+
+    #[test]
+    pub fn test_stop_training() {
+        let mut val: i64 = 0;
+        let optimized = optimize_with_iterate(
+            &TwoPoly { x: 5.0, y: 6.0 },
+            &CMAESParameters::default(),
+            |twopoly| {
+                (
+                    (twopoly.x - 25.0).abs() + (twopoly.y - 1.0).abs(),
+                    CMAESContinue::Stop,
+                )
+            },
+            |_, _| val += 1,
+        )
+        .unwrap();
+        assert!((optimized.0.x - 25.0).abs() > 0.00001);
+        assert!((optimized.0.y - 1.0).abs() > 0.00001);
     }
 }

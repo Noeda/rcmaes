@@ -14,7 +14,12 @@ extern "C" {
         sigma: c_double,
         lambda: c_int,
         num_coords: u64,
-        evaluate: extern "C" fn(*const c_double, *const c_int, *const c_void) -> c_double,
+        evaluate: extern "C" fn(
+            *const c_double,
+            *const c_int,
+            *const c_void,
+            *mut c_int,
+        ) -> c_double,
         iterator: extern "C" fn(*const c_void) -> (),
         userdata: *const c_void,
     );
