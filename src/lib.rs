@@ -116,7 +116,6 @@ pub struct CMAESParameters {
     m_algo: CMAESAlgo,
     m_use_surrogates: bool,
     m_use_elitism: bool,
-    m_revaluate_elite: bool,
     m_noisy: bool,
 }
 
@@ -166,14 +165,6 @@ impl CMAESParameters {
         self.m_use_elitism = elitism;
     }
 
-    pub fn revaluate_elite(&self) -> bool {
-        self.m_revaluate_elite
-    }
-
-    pub fn set_revaluate_elite(&mut self, revaluate_elite: bool) {
-        self.m_revaluate_elite = revaluate_elite;
-    }
-
     pub fn noisy(&self) -> bool {
         self.m_noisy
     }
@@ -191,7 +182,6 @@ impl Default for CMAESParameters {
             m_sigma: 1.0,
             m_use_surrogates: false,
             m_use_elitism: false,
-            m_revaluate_elite: false,
             m_noisy: false,
         }
     }
@@ -441,7 +431,6 @@ where
     unsafe {
         raw::cmaes_optimize(
             if params.m_noisy { 1 } else { 0 },
-            if params.m_revaluate_elite { 1 } else { 0 },
             if params.m_use_elitism { 1 } else { 0 },
             if params.m_use_surrogates { 1 } else { 0 },
             params.algo().to_c_int(),

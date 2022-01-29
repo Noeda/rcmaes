@@ -8,7 +8,7 @@
 using namespace libcmaes;
 
 extern "C" {
-    void cmaes_optimize(int noisy, int elitism_reevaluate, int use_elitism, int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*, int*), void (*iterator)(void*), void* userdata);
+    void cmaes_optimize(int noisy, int use_elitism, int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*, int*), void (*iterator)(void*), void* userdata);
 }
 
 template<typename Tag, typename Tag::type M>
@@ -50,7 +50,7 @@ defconst(VD_CMAES);
 defconst(VD_IPOP_CMAES);
 defconst(VD_BIPOP_CMAES);
 
-void cmaes_optimize(int noisy, int elitism_reevaluate, int use_elitism, int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*, int*), void (*iter)(void*), void* userdata)
+void cmaes_optimize(int noisy, int use_elitism, int use_surrogates, int algo, double* initial, double sigma, int lambda, uint64_t num_coords, double (*evaluate)(double*, int*, void*, int*), void (*iter)(void*), void* userdata)
 {
     std::vector<double> x0;
     for ( uint64_t i1 = 0; i1 < num_coords; ++i1 ) {
@@ -95,9 +95,6 @@ void cmaes_optimize(int noisy, int elitism_reevaluate, int use_elitism, int use_
     }
     if (use_elitism) {
         cmaparams.set_elitism(1);
-        if (elitism_reevaluate) {
-            cmaparams.set_revaluate_elite(1);
-        }
     }
 
     std::vector<double> out;

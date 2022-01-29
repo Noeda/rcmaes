@@ -6,7 +6,6 @@ use libc::{c_double, c_int, c_void};
 extern "C" {
     pub fn cmaes_optimize(
         noisy: c_int,
-        revaluate_elite: c_int,
         use_elitism: c_int,
         use_surrogates: c_int,
         algo: c_int,
