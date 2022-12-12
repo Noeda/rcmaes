@@ -6,6 +6,7 @@ extern crate rayon;
 pub mod raw;
 
 pub mod ball_descend;
+pub mod pycmaes;
 pub mod vectorizable;
 
 pub use vectorizable::Vectorizable;
