@@ -28,6 +28,7 @@ pub struct PyCMAES<T: Vectorizable> {
     _phantom: std::marker::PhantomData<T>,
 }
 
+#[derive(Clone, Debug)]
 pub struct PyCMAESItem<T> {
     item: T,
     vec: Vec<f64>,
@@ -57,14 +58,14 @@ pub struct PyCMAESSettings {
 #[derive(Clone, PartialEq, PartialOrd, Debug)]
 pub enum PyCMAESOptimizer {
     CMA,    // Regular CMA-ES that you get from import CMA
-    SepCMA, // Separable CMA-ES
+    VkDCMA, // VkD CMA-ES
 }
 
 impl PyCMAESOptimizer {
     fn to_string(&self) -> &'static str {
         match self {
             PyCMAESOptimizer::CMA => "CMA",
-            PyCMAESOptimizer::SepCMA => "SepCMA",
+            PyCMAESOptimizer::VkDCMA => "VkDCMA",
         }
     }
 }
@@ -128,16 +129,25 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
         })
     }
 
-    pub fn ask(&self) -> PyCMAESItem<T> {
+    pub fn ask(&self) -> Vec<PyCMAESItem<T>> {
         Python::with_gil(|py| {
             let ask = self.cmaes_module.getattr(py, "ask").unwrap();
-            let pyvec = ask.call1(py, (self.optimizer.clone_ref(py),)).unwrap();
-            let vec: Vec<f64> = pyvec.extract(py).unwrap();
-            PyCMAESItem {
-                item: T::from_vec(&vec, &self.ctx),
-                vec,
-                score: 0.0,
+            let pyvec = ask
+                .call1(py, (self.optimizer.clone_ref(py),))
+                .unwrap()
+                .extract::<Vec<Vec<f64>>>(py)
+                .unwrap();
+
+            let mut items = Vec::new();
+            for vec in pyvec {
+                let item = T::from_vec(&vec.clone(), &self.ctx);
+                items.push(PyCMAESItem {
+                    item,
+                    vec,
+                    score: 0.0,
+                });
             }
+            items
         })
     }
 
@@ -159,38 +169,32 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
 
 // Python code for all this glue
 const PYCMAES_CODE: &str = r#"
-import cmaes
+import cma
+from cma import restricted_gaussian_sampler as rgs
 import numpy as np
 
-def make_cmaes(initial, sigma, optimizer_name, bounds=None):
-    if bounds is not None:
-        np_bounds = np.concatenate(
-            [
-                np.tile([-np.inf, np.inf], (len(initial), 1)),
-            ]
-        )
-        for idx in range(len(initial)):
-            if len(bounds) == 1:
-                np_bounds[idx, 0] = bounds[0][0]
-                np_bounds[idx, 1] = bounds[0][1]
-            else:
-                np_bounds[idx, 0] = bounds[idx][0]
-                np_bounds[idx, 1] = bounds[idx][1]
-
-        return getattr(cmaes, optimizer_name)(np.array(initial), sigma, bounds=np_bounds, steps=np.zeros(len(initial)))
+def make_cmaes(initial, sigma, optimizer_name):
+    if optimizer_name == "CMA":
+        return cma.CMAEvolutionStrategy(initial, sigma)
+    elif optimizer_name == 'VkDCMA':
+        return cma.CMAEvolutionStrategy(initial, sigma, rgs.GaussVDSampler.extend_cma_options({}))
     else:
-        return getattr(cmaes, optimizer_name)(np.array(initial), sigma)
+        raise ValueError("Unknown optimizer: " + optimizer_name)
 
 def ask(optimizer):
-    return list(optimizer.ask())
+    if optimizer.stop():
+        return []
+    result = optimizer.ask()
+    result = list(map(list, result))
+    return result
 
 def tell(optimizer, solutions):
-    for sol in solutions:
-        sol[0] = np.array(sol[0])
-    optimizer.tell(solutions)
+    firsts = [x[0] for x in solutions]
+    seconds = [x[1] for x in solutions]
+    optimizer.tell(firsts, seconds)
 
 def population_size(optimizer):
-    return optimizer.population_size
+    return optimizer.popsize
 "#;
 
 #[cfg(test)]
@@ -230,10 +234,14 @@ mod tests {
 
         let expected_solution = (A, A.powi(2));
 
+        let mut solutions = vec![];
         for idx in 0..10000 {
-            let mut solutions = vec![];
-            for _ in 0..cmaes.population_size() {
-                let mut item = cmaes.ask();
+            let items = cmaes.ask();
+            if items.len() == 0 {
+                break;
+            }
+            solutions.clear();
+            for mut item in items.into_iter() {
                 // Rosenbrock function
                 item.set_score(
                     (A - item.item().x).powi(2)
@@ -241,19 +249,18 @@ mod tests {
                 );
                 solutions.push(item);
             }
-            if idx == 999 {
-                let item = solutions[0].item();
-                // Make sure the item is close enough
-                assert!((item.x - expected_solution.0).abs() < 0.1);
-                assert!((item.y - expected_solution.1).abs() < 0.1);
-            }
-            cmaes.tell(solutions);
+            cmaes.tell(solutions.clone());
         }
+        let item = solutions[0].item();
+        // Make sure the item is close enough
+        assert!((item.x - expected_solution.0).abs() < 0.1);
+        assert!((item.y - expected_solution.1).abs() < 0.1);
     }
 
     #[test]
     fn test_pycmaes() {
         pyo3::prepare_freethreaded_python();
         test_run(PyCMAESOptimizer::CMA);
+        test_run(PyCMAESOptimizer::VkDCMA);
     }
 }
