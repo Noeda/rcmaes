@@ -35,9 +35,14 @@ pub struct PyCMAESItem<T> {
     score: f64,
 }
 
-impl<T> PyCMAESItem<T> {
+impl<T: Vectorizable> PyCMAESItem<T> {
     pub fn item(&self) -> &T {
         &self.item
+    }
+
+    pub fn set_item(&mut self, item: T) {
+        (self.vec, _) = item.to_vec();
+        self.item = item;
     }
 
     pub fn set_score(&mut self, score: f64) {
@@ -53,6 +58,7 @@ impl<T> PyCMAESItem<T> {
 pub struct PyCMAESSettings {
     sigma: f64,
     optimizer: PyCMAESOptimizer,
+    population_size: Option<usize>,
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Debug)]
@@ -75,7 +81,13 @@ impl PyCMAESSettings {
         PyCMAESSettings {
             sigma: 1.0,
             optimizer: PyCMAESOptimizer::CMA,
+            population_size: None,
         }
+    }
+
+    pub fn population_size(mut self, pop_size: usize) -> Self {
+        self.population_size = Some(pop_size);
+        self
     }
 
     pub fn optimizer(mut self, optimizer: PyCMAESOptimizer) -> Self {
@@ -105,7 +117,12 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
             let pyvec = PyList::new(py, &vec);
 
             let optimizer = make_cmaes
-                .call1((pyvec, pycmaes_settings.sigma, optimizer_name))
+                .call1((
+                    pyvec,
+                    pycmaes_settings.sigma,
+                    optimizer_name,
+                    pycmaes_settings.population_size,
+                ))
                 .unwrap();
 
             PyCMAES {
@@ -173,13 +190,16 @@ import cma
 from cma import restricted_gaussian_sampler as rgs
 import numpy as np
 
-def make_cmaes(initial, sigma, optimizer_name):
+def make_cmaes(initial, sigma, optimizer_name, population_size=None):
     if optimizer_name == "CMA":
-        return cma.CMAEvolutionStrategy(initial, sigma)
+        result = cma.CMAEvolutionStrategy(initial, sigma)
     elif optimizer_name == 'VkDCMA':
-        return cma.CMAEvolutionStrategy(initial, sigma, rgs.GaussVDSampler.extend_cma_options({}))
+        result = cma.CMAEvolutionStrategy(initial, sigma, rgs.GaussVDSampler.extend_cma_options({}))
     else:
         raise ValueError("Unknown optimizer: " + optimizer_name)
+    if population_size is not None:
+        result.popsize = population_size
+    return result
 
 def ask(optimizer):
     if optimizer.stop():
