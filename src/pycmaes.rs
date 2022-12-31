@@ -40,6 +40,10 @@ impl<T: Vectorizable> PyCMAESItem<T> {
         &self.item
     }
 
+    // TODO: according to cma documentation, passing candidates manually to CMA can have negative
+    // consequences when active CMA is used. We could take that into account and properly inject
+    // solutions the sanctioned way.
+    // (https://cma-es.github.io/apidocs-pycma/cma.evolution_strategy.CMAEvolutionStrategy.html)
     pub fn set_item(&mut self, item: T) {
         (self.vec, _) = item.to_vec();
         self.item = item;
@@ -57,6 +61,7 @@ impl<T: Vectorizable> PyCMAESItem<T> {
 #[derive(Clone, PartialEq, PartialOrd)]
 pub struct PyCMAESSettings {
     sigma: f64,
+    active: bool,
     optimizer: PyCMAESOptimizer,
     population_size: Option<usize>,
 }
@@ -81,6 +86,7 @@ impl PyCMAESSettings {
         PyCMAESSettings {
             sigma: 1.0,
             optimizer: PyCMAESOptimizer::CMA,
+            active: true,
             population_size: None,
         }
     }
@@ -97,6 +103,11 @@ impl PyCMAESSettings {
 
     pub fn sigma(mut self, sigma: f64) -> Self {
         self.sigma = sigma;
+        self
+    }
+
+    pub fn active(mut self, active: bool) -> Self {
+        self.active = active;
         self
     }
 }
@@ -122,6 +133,7 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
                     pycmaes_settings.sigma,
                     optimizer_name,
                     pycmaes_settings.population_size,
+                    pycmaes_settings.active,
                 ))
                 .unwrap();
 
@@ -190,13 +202,18 @@ import cma
 from cma import restricted_gaussian_sampler as rgs
 import numpy as np
 
-def make_cmaes(initial, sigma, optimizer_name, population_size=None):
-    if optimizer_name == "CMA":
-        result = cma.CMAEvolutionStrategy(initial, sigma)
+def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None):
+    opts = cma.CMAOptions()
+    if active is not None:
+        opts.set('CMA_active', active)
+    if optimizer_name == 'CMA':
+        pass
     elif optimizer_name == 'VkDCMA':
-        result = cma.CMAEvolutionStrategy(initial, sigma, rgs.GaussVDSampler.extend_cma_options({}))
+        opts = rgs.GaussVDSampler.extend_cma_options(opts)
     else:
         raise ValueError("Unknown optimizer: " + optimizer_name)
+
+    result = cma.CMAEvolutionStrategy(initial, sigma, opts)
     if population_size is not None:
         result.popsize = population_size
     return result
@@ -255,7 +272,7 @@ mod tests {
         let expected_solution = (A, A.powi(2));
 
         let mut solutions = vec![];
-        for idx in 0..10000 {
+        for _idx in 0..10000 {
             let items = cmaes.ask();
             if items.len() == 0 {
                 break;
