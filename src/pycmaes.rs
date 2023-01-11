@@ -212,10 +212,10 @@ def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None
         opts = rgs.GaussVDSampler.extend_cma_options(opts)
     else:
         raise ValueError("Unknown optimizer: " + optimizer_name)
+    if population_size is not None:
+        opts.set('popsize', population_size)
 
     result = cma.CMAEvolutionStrategy(initial, sigma, opts)
-    if population_size is not None:
-        result.popsize = population_size
     return result
 
 def ask(optimizer):
