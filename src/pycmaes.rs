@@ -33,6 +33,7 @@ pub struct PyCMAESItem<T> {
     item: T,
     vec: Vec<f64>,
     score: f64,
+    injected: Option<Vec<f64>>,
 }
 
 impl<T: Vectorizable> PyCMAESItem<T> {
@@ -40,13 +41,13 @@ impl<T: Vectorizable> PyCMAESItem<T> {
         &self.item
     }
 
-    // TODO: according to cma documentation, passing candidates manually to CMA can have negative
-    // consequences when active CMA is used. We could take that into account and properly inject
-    // solutions the sanctioned way.
-    // (https://cma-es.github.io/apidocs-pycma/cma.evolution_strategy.CMAEvolutionStrategy.html)
     pub fn set_item(&mut self, item: T) {
-        (self.vec, _) = item.to_vec();
-        self.item = item;
+        let (vec, _) = item.to_vec();
+        // According to cma documentation, passing candidates manually to CMA can have negative
+        // consequences when active CMA is used. We want to use a inject() call to do it properly.
+        // PyCMA still wants the original solution, so we keep it around.
+        // (https://cma-es.github.io/apidocs-pycma/cma.evolution_strategy.CMAEvolutionStrategy.html)
+        self.injected = Some(vec);
     }
 
     pub fn set_score(&mut self, score: f64) {
@@ -174,6 +175,7 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
                     item,
                     vec,
                     score: 0.0,
+                    injected: None,
                 });
             }
             items
@@ -184,7 +186,7 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
         Python::with_gil(|py| {
             let tell = self.cmaes_module.getattr(py, "tell").unwrap();
             let pyvec = PyList::empty(py);
-            for item in candidate {
+            for item in candidate.iter() {
                 let pyitem = PyList::new(py, &item.vec);
                 let pyscore = PyFloat::new(py, item.score);
                 let tup = PyList::new(py, &[PyObject::from(pyitem), PyObject::from(pyscore)]);
@@ -192,6 +194,20 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
             }
             tell.call1(py, (self.optimizer.clone_ref(py), pyvec))
                 .unwrap();
+            let pyvec = PyList::empty(py);
+            let inject = self.cmaes_module.getattr(py, "inject").unwrap();
+            let mut has_injections = false;
+            for candidate in candidate.iter() {
+                if let Some(ref injected_vec) = candidate.injected {
+                    has_injections = true;
+                    pyvec.append(PyList::new(py, injected_vec)).unwrap();
+                }
+            }
+            if has_injections {
+                inject
+                    .call1(py, (self.optimizer.clone_ref(py), pyvec))
+                    .unwrap();
+            }
         })
     }
 }
@@ -230,6 +246,9 @@ def tell(optimizer, solutions):
     seconds = [x[1] for x in solutions]
     optimizer.tell(firsts, seconds)
 
+def inject(optimizer, solutions):
+    optimizer.inject(solutions)
+
 def population_size(optimizer):
     return optimizer.popsize
 "#;
@@ -260,10 +279,10 @@ mod tests {
         }
     }
 
-    fn test_run(optim: PyCMAESOptimizer) {
+    fn test_run(optim: PyCMAESOptimizer, inject: bool) {
         let mut cmaes = PyCMAES::new(
             &TestVector { x: 1.9, y: -3.0 },
-            PyCMAESSettings::new().optimizer(optim),
+            PyCMAESSettings::new().optimizer(optim).population_size(30),
         );
 
         const A: f64 = 2.5;
@@ -277,13 +296,17 @@ mod tests {
             if items.len() == 0 {
                 break;
             }
+
             solutions.clear();
-            for mut item in items.into_iter() {
+            for (idx, mut item) in items.into_iter().enumerate() {
                 // Rosenbrock function
                 item.set_score(
                     (A - item.item().x).powi(2)
                         + B * (item.item().y - item.item().x.powi(2)).powi(2),
                 );
+                if inject && (idx == 12 || idx == 13) && _idx > 50 {
+                    item.set_item(TestVector { x: 1.3, y: -1.2 });
+                }
                 solutions.push(item);
             }
             cmaes.tell(solutions.clone());
@@ -297,7 +320,14 @@ mod tests {
     #[test]
     fn test_pycmaes() {
         pyo3::prepare_freethreaded_python();
-        test_run(PyCMAESOptimizer::CMA);
-        test_run(PyCMAESOptimizer::VkDCMA);
+        test_run(PyCMAESOptimizer::CMA, false);
+        test_run(PyCMAESOptimizer::VkDCMA, false);
+    }
+
+    #[test]
+    fn test_inject() {
+        pyo3::prepare_freethreaded_python();
+        test_run(PyCMAESOptimizer::VkDCMA, true);
+        test_run(PyCMAESOptimizer::CMA, true);
     }
 }
