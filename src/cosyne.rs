@@ -112,6 +112,18 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
         }
     }
 
+    pub fn settings(&self) -> CosyneSettings {
+        self.settings.clone()
+    }
+
+    pub fn set_sigma(&mut self, sigma: f64) {
+        self.settings.sigma = sigma;
+    }
+
+    pub fn sigma(&self) -> f64 {
+        self.settings.sigma
+    }
+
     pub fn ask(&mut self) -> Vec<CosyneCandidate<T>> {
         let mut candidates: Vec<CosyneCandidate<T>> = Vec::with_capacity(self.settings.subpop_size);
         let mut candidate_vec: Vec<f64> = Vec::with_capacity(self.population.len());
