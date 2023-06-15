@@ -122,7 +122,6 @@ impl<T: Clone, EliteKey> MAPElitesCandidate<T, EliteKey> {
 }
 
 pub struct IterElites<'a, EliteKey, T> {
-    map: &'a SkipMap<EliteKey, (T, f64)>,
     iter: skiplist::skipmap::Iter<'a, EliteKey, (T, f64)>,
 }
 
@@ -158,7 +157,6 @@ impl<T: Clone + Vectorizable, EliteKey: Clone + Ord> MAPElites<T, EliteKey> {
     /// Iterate over all elites. Gives the elites and their score.
     pub fn iter_elites<'a>(&'a self) -> IterElites<'a, EliteKey, T> {
         IterElites {
-            map: &self.elites,
             iter: self.elites.iter(),
         }
     }
