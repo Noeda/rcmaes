@@ -24,6 +24,7 @@ pub struct CosyneSettings {
     subpop_size: usize,
     num_pop_replacement: usize,
     sigma: f64,
+    shrinkage_multiplier: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -53,7 +54,26 @@ impl CosyneSettings {
             subpop_size: 16,
             num_pop_replacement: 10,
             sigma: 1.0,
+            shrinkage_multiplier: 1.0,
         }
+    }
+
+    // shrinkage multiplier is a type of regularization
+    //
+    // If the current value of some parameter is X, then, when generating a new mutation of X, the
+    // new value is:
+    //
+    //  if X >= 0:   random_range [-X..X * shrinkage_multiplier]
+    //  if X < 0:    random_range [-X * shrinkage_multiplier..X]
+    //
+    // Typical values might be something like 0.9 or 0.95, depending on problem. Using values
+    // greater than 1 might cause explosion of parameter values. Using too low value may make it
+    // hard for the model to learn anything as there's very strong tendency towards 0.
+    //
+    // Using multiplier of 1 (which is the default) effectively disables this feature.
+    pub fn shrinkage_multiplier(mut self, multiplier: f64) -> Self {
+        self.shrinkage_multiplier = multiplier;
+        self
     }
 
     pub fn subpop_size(mut self, subpop_size: usize) -> Self {
@@ -155,8 +175,20 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
             let (cand_vec, _) = candidates[idx].item.to_vec();
             let ridx = idx + (self.settings.subpop_size - self.settings.num_pop_replacement);
             for idx2 in 0..self.population.len() {
-                self.population[idx2].individuals[candidates[ridx].idx] =
-                    cand_vec[idx2] + rng.gen_range(-self.settings.sigma..self.settings.sigma);
+                let old_value = cand_vec[idx2];
+                if old_value >= 0.0 {
+                    self.population[idx2].individuals[candidates[ridx].idx] = old_value
+                        + rng.gen_range(
+                            -self.settings.sigma
+                                ..self.settings.sigma * self.settings.shrinkage_multiplier,
+                        );
+                } else {
+                    self.population[idx2].individuals[candidates[ridx].idx] = old_value
+                        + rng.gen_range(
+                            -self.settings.sigma * self.settings.shrinkage_multiplier
+                                ..self.settings.sigma,
+                        );
+                };
             }
         }
 
