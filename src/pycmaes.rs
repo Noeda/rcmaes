@@ -115,6 +115,8 @@ impl PyCMAESSettings {
 
 impl<T: Vectorizable + Clone> PyCMAES<T> {
     pub fn new(initial: &T, pycmaes_settings: PyCMAESSettings) -> Self {
+        pyo3::prepare_freethreaded_python();
+
         let (vec, ctx) = initial.to_vec();
         let dimension = vec.len();
 
