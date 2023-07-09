@@ -120,7 +120,7 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
                 } else {
                     pop[idx]
                         .individuals
-                        .push(v.clone() + rng.gen_range(-1.0..1.0));
+                        .push(v.clone() + rng.gen_range(-settings.sigma..settings.sigma));
                 }
             }
         }
@@ -176,19 +176,10 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
             let ridx = idx + (self.settings.subpop_size - self.settings.num_pop_replacement);
             for idx2 in 0..self.population.len() {
                 let old_value = cand_vec[idx2];
-                if old_value >= 0.0 {
-                    self.population[idx2].individuals[candidates[ridx].idx] = old_value
-                        + rng.gen_range(
-                            -self.settings.sigma
-                                ..self.settings.sigma * self.settings.shrinkage_multiplier,
-                        );
-                } else {
-                    self.population[idx2].individuals[candidates[ridx].idx] = old_value
-                        + rng.gen_range(
-                            -self.settings.sigma * self.settings.shrinkage_multiplier
-                                ..self.settings.sigma,
-                        );
-                };
+                let cauchy: f64 = rand_distr::Cauchy::new(0.0, self.settings.sigma)
+                    .unwrap()
+                    .sample(&mut rng);
+                self.population[idx2].individuals[candidates[ridx].idx] = old_value + cauchy;
             }
         }
 
