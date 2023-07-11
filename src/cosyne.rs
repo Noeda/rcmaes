@@ -9,14 +9,11 @@ use rand::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct Cosyne<T: Vectorizable> {
-    population: Vec<SubPopulation>,
+    // NxM matrix, one column is one parameter.
+    population_raw: Vec<f64>,
+    dimension: usize,
     settings: CosyneSettings,
     ctx: T::Context,
-}
-
-#[derive(Clone, Debug)]
-pub struct SubPopulation {
-    individuals: Vec<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -25,6 +22,45 @@ pub struct CosyneSettings {
     num_pop_replacement: usize,
     sigma: f64,
     shrinkage_multiplier: f64,
+    sampler: CosyneSampler,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CosyneSampler {
+    Uniform,
+    Gaussian,
+    Cauchy,
+}
+
+impl CosyneSampler {
+    pub fn sample<R: Rng>(
+        &self,
+        value: f64,
+        sigma: f64,
+        shrinkage_multiplier: f64,
+        rng: &mut R,
+    ) -> f64 {
+        match self {
+            CosyneSampler::Uniform => {
+                let mut low_sigma = -sigma;
+                let mut high_sigma = sigma;
+                if value < 0.0 {
+                    low_sigma *= shrinkage_multiplier;
+                } else {
+                    high_sigma *= shrinkage_multiplier;
+                }
+                value + rng.gen_range(low_sigma..high_sigma)
+            }
+            CosyneSampler::Gaussian => {
+                let dist = rand_distr::Normal::new(0.0, sigma).unwrap();
+                value + dist.sample(rng) * shrinkage_multiplier
+            }
+            CosyneSampler::Cauchy => {
+                let dist = rand_distr::Cauchy::new(0.0, sigma).unwrap();
+                value + dist.sample(rng) * shrinkage_multiplier
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +91,7 @@ impl CosyneSettings {
             num_pop_replacement: 10,
             sigma: 1.0,
             shrinkage_multiplier: 1.0,
+            sampler: CosyneSampler::Cauchy,
         }
     }
 
@@ -99,6 +136,11 @@ impl CosyneSettings {
         self.sigma = sigma;
         self
     }
+
+    pub fn sampler(mut self, sampler: CosyneSampler) -> Self {
+        self.sampler = sampler;
+        self
+    }
 }
 
 impl<T: Clone + Vectorizable> Cosyne<T> {
@@ -106,28 +148,28 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
         assert!(settings.num_pop_replacement <= settings.subpop_size);
 
         let (vec, ctx) = initial.to_vec();
-        let mut pop: Vec<SubPopulation> = vec![
-            SubPopulation {
-                individuals: Vec::with_capacity(settings.subpop_size)
-            };
-            vec.len()
-        ];
+        let mut pop: Vec<f64> = Vec::with_capacity(settings.subpop_size * vec.len());
         let mut rng = thread_rng();
-        for (idx, v) in vec.iter().enumerate() {
-            for idx2 in 0..settings.subpop_size {
-                if idx2 == 0 {
-                    pop[idx].individuals.push(v.clone());
-                } else {
-                    pop[idx]
-                        .individuals
-                        .push(v.clone() + rng.gen_range(-settings.sigma..settings.sigma));
-                }
+        for idx in 0..settings.subpop_size * vec.len() {
+            let individual_idx = idx / settings.subpop_size;
+            let subpop_idx = idx % settings.subpop_size;
+            if subpop_idx == 0 {
+                pop.push(vec[individual_idx]);
+            } else {
+                let sample = settings.sampler.sample(
+                    0.0,
+                    settings.sigma,
+                    settings.shrinkage_multiplier,
+                    &mut rng,
+                );
+                pop.push(sample);
             }
         }
 
         Self {
             settings: settings.clone(),
-            population: pop,
+            dimension: vec.len(),
+            population_raw: pop,
             ctx,
         }
     }
@@ -146,11 +188,12 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
 
     pub fn ask(&mut self) -> Vec<CosyneCandidate<T>> {
         let mut candidates: Vec<CosyneCandidate<T>> = Vec::with_capacity(self.settings.subpop_size);
-        let mut candidate_vec: Vec<f64> = Vec::with_capacity(self.population.len());
+        let mut candidate_vec: Vec<f64> = Vec::with_capacity(self.dimension);
         for idx in 0..self.settings.subpop_size {
             candidate_vec.truncate(0);
-            for idx2 in 0..self.population.len() {
-                candidate_vec.push(self.population[idx2].individuals[idx]);
+            for idx2 in 0..self.dimension {
+                let offset = idx + idx2 * self.settings.subpop_size;
+                candidate_vec.push(self.population_raw[offset]);
             }
             let item = T::from_vec(&candidate_vec, &self.ctx);
             candidates.push(CosyneCandidate {
@@ -174,18 +217,24 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
         for idx in 0..self.settings.num_pop_replacement {
             let (cand_vec, _) = candidates[idx].item.to_vec();
             let ridx = idx + (self.settings.subpop_size - self.settings.num_pop_replacement);
-            for idx2 in 0..self.population.len() {
+            for idx2 in 0..self.dimension {
                 let old_value = cand_vec[idx2];
-                let cauchy: f64 = rand_distr::Cauchy::new(0.0, self.settings.sigma)
-                    .unwrap()
-                    .sample(&mut rng);
-                self.population[idx2].individuals[candidates[ridx].idx] = old_value + cauchy;
+                let sample = self.settings.sampler.sample(
+                    old_value,
+                    self.settings.sigma,
+                    self.settings.shrinkage_multiplier,
+                    &mut rng,
+                );
+                let offset = candidates[ridx].idx + idx2 * self.settings.subpop_size;
+                self.population_raw[offset] = sample;
             }
         }
 
-        for idx in 0..self.population.len() {
+        for idx in 0..self.dimension {
+            let offset_start = idx * self.settings.subpop_size;
+            let offset_end = (idx + 1) * self.settings.subpop_size;
             // Shuffle
-            self.population[idx].individuals.shuffle(&mut rng);
+            self.population_raw[offset_start..offset_end].shuffle(&mut rng);
         }
     }
 }
