@@ -162,7 +162,7 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
                     settings.shrinkage_multiplier,
                     &mut rng,
                 );
-                pop.push(sample);
+                pop.push(sample + vec[individual_idx]);
             }
         }
 
