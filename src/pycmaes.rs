@@ -115,20 +115,18 @@ impl PyCMAESSettings {
 
 impl<T: Vectorizable + Clone> PyCMAES<T> {
     pub fn new(initial: &T, pycmaes_settings: PyCMAESSettings) -> Self {
-        pyo3::prepare_freethreaded_python();
-
         let (vec, ctx) = initial.to_vec();
         let dimension = vec.len();
 
         Python::with_gil(|py| {
             // Call make_cmaes in PYCMAES_MODULE
             let cmaes_module =
-                PyModule::from_code(py, PYCMAES_CODE, "pycmaes.py", "pycmaes").unwrap();
+                PyModule::from_code_bound(py, PYCMAES_CODE, "pycmaes.py", "pycmaes").unwrap();
             let make_cmaes = cmaes_module.getattr("make_cmaes").unwrap();
 
             let optimizer_name = format!("{}", pycmaes_settings.optimizer.to_string());
 
-            let pyvec = PyList::new(py, &vec);
+            let pyvec = PyList::new_bound(py, &vec);
 
             let optimizer = make_cmaes
                 .call1((
@@ -187,22 +185,22 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
     pub fn tell(&mut self, candidate: Vec<PyCMAESItem<T>>) {
         Python::with_gil(|py| {
             let tell = self.cmaes_module.getattr(py, "tell").unwrap();
-            let pyvec = PyList::empty(py);
+            let pyvec = PyList::empty_bound(py);
             for item in candidate.iter() {
-                let pyitem = PyList::new(py, &item.vec);
-                let pyscore = PyFloat::new(py, item.score);
-                let tup = PyList::new(py, &[PyObject::from(pyitem), PyObject::from(pyscore)]);
+                let pyitem = PyList::new_bound(py, &item.vec);
+                let pyscore = PyFloat::new_bound(py, item.score);
+                let tup = PyList::new_bound(py, &[PyObject::from(pyitem), PyObject::from(pyscore)]);
                 pyvec.append(tup).unwrap();
             }
             tell.call1(py, (self.optimizer.clone_ref(py), pyvec))
                 .unwrap();
-            let pyvec = PyList::empty(py);
+            let pyvec = PyList::empty_bound(py);
             let inject = self.cmaes_module.getattr(py, "inject").unwrap();
             let mut has_injections = false;
             for candidate in candidate.iter() {
                 if let Some(ref injected_vec) = candidate.injected {
                     has_injections = true;
-                    pyvec.append(PyList::new(py, injected_vec)).unwrap();
+                    pyvec.append(PyList::new_bound(py, injected_vec)).unwrap();
                 }
             }
             if has_injections {
@@ -216,6 +214,15 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
 
 // Python code for all this glue
 const PYCMAES_CODE: &str = r#"
+import sys
+import os
+
+# Respect virtualenv, if set. The interpreter we are running as might be totally different though I suppose.
+if os.environ.get('VIRTUAL_ENV', None):
+    # add search paths
+    SITE_PACKAGES_ADDITIONAL = os.path.join(os.environ['VIRTUAL_ENV'], 'lib', 'python' + f'{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+    sys.path.insert(0, SITE_PACKAGES_ADDITIONAL)
+
 import cma
 from cma import restricted_gaussian_sampler as rgs
 import numpy as np
