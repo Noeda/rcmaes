@@ -210,6 +210,18 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
             }
         })
     }
+
+    pub fn sigma(&self) -> f64 {
+        Python::with_gil(|py| {
+            let get_sigma = self.cmaes_module.getattr(py, "get_sigma").unwrap();
+            let sigma = get_sigma
+                .call1(py, (self.optimizer.clone_ref(py),))
+                .unwrap()
+                .extract::<f64>(py)
+                .unwrap();
+            sigma
+        })
+    }
 }
 
 // Python code for all this glue
@@ -260,6 +272,9 @@ def inject(optimizer, solutions):
 
 def population_size(optimizer):
     return optimizer.popsize
+
+def get_sigma(optimizer):
+    return optimizer.sigma
 "#;
 
 #[cfg(test)]
@@ -317,6 +332,7 @@ mod tests {
                     item.set_item(TestVector { x: 1.3, y: -1.2 });
                 }
                 solutions.push(item);
+                let _ = cmaes.sigma();
             }
             cmaes.tell(solutions.clone());
         }
