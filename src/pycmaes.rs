@@ -65,6 +65,7 @@ impl<T: Vectorizable> PyCMAESItem<T> {
 pub struct PyCMAESSettings {
     sigma: f64,
     active: bool,
+    use_adapt_sigma_tpa: bool,
     optimizer: PyCMAESOptimizer,
     population_size: Option<usize>,
 }
@@ -90,6 +91,7 @@ impl PyCMAESSettings {
             sigma: 1.0,
             optimizer: PyCMAESOptimizer::CMA,
             active: true,
+            use_adapt_sigma_tpa: false,
             population_size: None,
         }
     }
@@ -111,6 +113,11 @@ impl PyCMAESSettings {
 
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
+        self
+    }
+
+    pub fn use_adapt_sigma_tpa(mut self, use_adapt_sigma_tpa: bool) -> Self {
+        self.use_adapt_sigma_tpa = use_adapt_sigma_tpa;
         self
     }
 }
@@ -138,6 +145,7 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
                     optimizer_name,
                     pycmaes_settings.population_size,
                     pycmaes_settings.active,
+                    pycmaes_settings.use_adapt_sigma_tpa,
                 ))
                 .unwrap();
 
@@ -243,10 +251,11 @@ if os.environ.get('VIRTUAL_ENV', None):
     sys.path.insert(0, SITE_PACKAGES_ADDITIONAL)
 
 import cma
+import cma.sigma_adaptation
 from cma import restricted_gaussian_sampler as rgs
 import numpy as np
 
-def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None):
+def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None, use_adapt_sigma_tpa=False):
     opts = cma.CMAOptions()
     if active is not None:
         opts.set('CMA_active', active)
@@ -258,6 +267,9 @@ def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None
         raise ValueError("Unknown optimizer: " + optimizer_name)
     if population_size is not None:
         opts.set('popsize', population_size)
+
+    if use_adapt_sigma_tpa:
+        opts.set('AdaptSigma', cma.sigma_adaptation.CMAAdaptSigmaTPA)
 
     result = cma.CMAEvolutionStrategy(initial, sigma, opts)
     return result
@@ -311,11 +323,13 @@ mod tests {
         }
     }
 
-    fn test_run(optim: PyCMAESOptimizer, inject: bool) {
-        let mut cmaes = PyCMAES::new(
-            &TestVector { x: 1.9, y: -3.0 },
-            PyCMAESSettings::new().optimizer(optim).population_size(30),
-        );
+    fn test_run(optim: PyCMAESOptimizer, inject: bool, use_adapt_sigma_tpa: bool) {
+        let mut settings = PyCMAESSettings::new().optimizer(optim).population_size(30);
+        if use_adapt_sigma_tpa {
+            settings = settings.use_adapt_sigma_tpa(true);
+        }
+
+        let mut cmaes = PyCMAES::new(&TestVector { x: 1.9, y: -3.0 }, settings);
 
         const A: f64 = 2.5;
         const B: f64 = 100.0;
@@ -353,14 +367,18 @@ mod tests {
     #[test]
     fn test_pycmaes() {
         pyo3::prepare_freethreaded_python();
-        test_run(PyCMAESOptimizer::CMA, false);
-        test_run(PyCMAESOptimizer::VkDCMA, false);
+        test_run(PyCMAESOptimizer::CMA, false, false);
+        test_run(PyCMAESOptimizer::VkDCMA, false, false);
+        test_run(PyCMAESOptimizer::CMA, false, true);
+        test_run(PyCMAESOptimizer::VkDCMA, false, true);
     }
 
     #[test]
     fn test_inject() {
         pyo3::prepare_freethreaded_python();
-        test_run(PyCMAESOptimizer::VkDCMA, true);
-        test_run(PyCMAESOptimizer::CMA, true);
+        test_run(PyCMAESOptimizer::VkDCMA, true, false);
+        test_run(PyCMAESOptimizer::CMA, true, false);
+        test_run(PyCMAESOptimizer::VkDCMA, true, true);
+        test_run(PyCMAESOptimizer::CMA, true, true);
     }
 }
