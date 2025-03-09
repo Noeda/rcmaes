@@ -8,6 +8,7 @@
 
 use crate::vectorizable::Vectorizable;
 use rand::prelude::*;
+use rand::rng;
 use skiplist::skipmap::SkipMap;
 use std::collections::VecDeque;
 
@@ -74,9 +75,9 @@ impl<T: Clone, EliteKey: Clone + Ord> Clone for MAPElites<T, EliteKey> {
         for (key, value) in self.elites.iter() {
             elites.insert(key.clone(), value.clone());
             if elites.len() >= self.settings.max_stored_elites {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 for _ in 0..self.settings.delete_n_when_full {
-                    elites.remove_index(rng.gen_range(0..elites.len()));
+                    elites.remove_index(rng.random_range(0..elites.len()));
                 }
             }
         }
@@ -166,9 +167,9 @@ impl<T: Clone + Vectorizable, EliteKey: Clone + Ord> MAPElites<T, EliteKey> {
             panic!("MAPElites must be initialized with at least one individual");
         }
         // Pick random elite
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let elite: &(T, f64) = match self.settings.sample_strategy {
-            MAPElitesSampleStrategy::Random => &self.elites[rng.gen_range(0..self.elites.len())],
+            MAPElitesSampleStrategy::Random => &self.elites[rng.random_range(0..self.elites.len())],
             MAPElitesSampleStrategy::BiasTopOnes => {
                 let mut best_ones: Vec<(usize, f64)> = Vec::with_capacity(self.elites.len());
                 for idx in 0..self.elites.len() {
@@ -177,17 +178,17 @@ impl<T: Clone + Vectorizable, EliteKey: Clone + Ord> MAPElites<T, EliteKey> {
                 best_ones.sort_unstable_by(|a, b| {
                     a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
                 });
-                let idx = rng.gen_range(0..self.elites.len());
-                let idx2 = rng.gen_range(0..=idx);
-                let idx3 = rng.gen_range(0..=idx2);
-                let idx4 = rng.gen_range(0..=idx3);
-                let idx5 = rng.gen_range(0..=idx4);
+                let idx = rng.random_range(0..self.elites.len());
+                let idx2 = rng.random_range(0..=idx);
+                let idx3 = rng.random_range(0..=idx2);
+                let idx4 = rng.random_range(0..=idx3);
+                let idx5 = rng.random_range(0..=idx4);
                 &self.elites[best_ones[idx5].0]
             }
         };
         let (mut vec, ctx) = elite.0.to_vec();
         for v in vec.iter_mut() {
-            *v += rng.gen_range(-self.settings.sigma..self.settings.sigma);
+            *v += rng.random_range(-self.settings.sigma..self.settings.sigma);
         }
         let item = T::from_vec(&vec, &ctx);
         item

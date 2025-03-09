@@ -15,8 +15,10 @@
  */
 
 use crate::vectorizable::Vectorizable;
+use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyList};
+use std::ffi::CStr;
 
 #[derive(Debug)]
 pub struct PyCMAES<T: Vectorizable> {
@@ -121,12 +123,13 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
         Python::with_gil(|py| {
             // Call make_cmaes in PYCMAES_MODULE
             let cmaes_module =
-                PyModule::from_code_bound(py, PYCMAES_CODE, "pycmaes.py", "pycmaes").unwrap();
+                PyModule::from_code(py, PYCMAES_CODE, c_str!("pycmaes.py"), c_str!("pycmaes"))
+                    .unwrap();
             let make_cmaes = cmaes_module.getattr("make_cmaes").unwrap();
 
             let optimizer_name = format!("{}", pycmaes_settings.optimizer.to_string());
 
-            let pyvec = PyList::new_bound(py, &vec);
+            let pyvec = PyList::new(py, &vec).unwrap();
 
             let optimizer = make_cmaes
                 .call1((
@@ -185,22 +188,25 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
     pub fn tell(&mut self, candidate: Vec<PyCMAESItem<T>>) {
         Python::with_gil(|py| {
             let tell = self.cmaes_module.getattr(py, "tell").unwrap();
-            let pyvec = PyList::empty_bound(py);
+            let pyvec = PyList::empty(py);
             for item in candidate.iter() {
-                let pyitem = PyList::new_bound(py, &item.vec);
-                let pyscore = PyFloat::new_bound(py, item.score);
-                let tup = PyList::new_bound(py, &[PyObject::from(pyitem), PyObject::from(pyscore)]);
+                let pyitem = PyList::new(py, &item.vec).unwrap();
+                let pyscore = PyFloat::new(py, item.score);
+                let tup =
+                    PyList::new(py, &[PyObject::from(pyitem), PyObject::from(pyscore)]).unwrap();
                 pyvec.append(tup).unwrap();
             }
             tell.call1(py, (self.optimizer.clone_ref(py), pyvec))
                 .unwrap();
-            let pyvec = PyList::empty_bound(py);
+            let pyvec = PyList::empty(py);
             let inject = self.cmaes_module.getattr(py, "inject").unwrap();
             let mut has_injections = false;
             for candidate in candidate.iter() {
                 if let Some(ref injected_vec) = candidate.injected {
                     has_injections = true;
-                    pyvec.append(PyList::new_bound(py, injected_vec)).unwrap();
+                    pyvec
+                        .append(PyList::new(py, injected_vec).unwrap())
+                        .unwrap();
                 }
             }
             if has_injections {
@@ -225,7 +231,8 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
 }
 
 // Python code for all this glue
-const PYCMAES_CODE: &str = r#"
+const PYCMAES_CODE: &CStr = c_str!(
+    r#"
 import sys
 import os
 
@@ -275,7 +282,8 @@ def population_size(optimizer):
 
 def get_sigma(optimizer):
     return optimizer.sigma
-"#;
+"#
+);
 
 #[cfg(test)]
 mod tests {

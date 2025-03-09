@@ -6,6 +6,7 @@
 
 use crate::vectorizable::Vectorizable;
 use rand::prelude::*;
+use rand::rng;
 
 #[derive(Clone, Debug)]
 pub struct Cosyne<T: Vectorizable> {
@@ -49,7 +50,7 @@ impl CosyneSampler {
                 } else {
                     high_sigma *= shrinkage_multiplier;
                 }
-                value + rng.gen_range(low_sigma..high_sigma)
+                value + rng.random_range(low_sigma..high_sigma)
             }
             CosyneSampler::Gaussian => {
                 let dist = rand_distr::Normal::new(0.0, sigma).unwrap();
@@ -149,7 +150,7 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
 
         let (vec, ctx) = initial.to_vec();
         let mut pop: Vec<f64> = Vec::with_capacity(settings.subpop_size * vec.len());
-        let mut rng = thread_rng();
+        let mut rng = rng();
         for idx in 0..settings.subpop_size * vec.len() {
             let individual_idx = idx / settings.subpop_size;
             let subpop_idx = idx % settings.subpop_size;
@@ -208,7 +209,7 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
     pub fn tell(&mut self, mut candidates: Vec<CosyneCandidate<T>>) {
         assert_eq!(candidates.len(), self.settings.subpop_size);
 
-        let mut rng = thread_rng();
+        let mut rng = rng();
         candidates.sort_unstable_by(|a, b| {
             a.score
                 .partial_cmp(&b.score)

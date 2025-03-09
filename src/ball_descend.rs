@@ -101,7 +101,7 @@ where
 {
     let make_perturbed_candidate = |m: &T, sigma: f64| -> T {
         let (mut t_as_vec, t_ctx) = m.to_vec();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let distr = Normal::new(0.0, sigma).unwrap();
 
         for v in t_as_vec.iter_mut() {
