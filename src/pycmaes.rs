@@ -68,6 +68,7 @@ pub struct PyCMAESSettings {
     use_adapt_sigma_tpa: bool,
     optimizer: PyCMAESOptimizer,
     population_size: Option<usize>,
+    never_stop: bool,
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Debug)]
@@ -93,6 +94,7 @@ impl PyCMAESSettings {
             active: true,
             use_adapt_sigma_tpa: false,
             population_size: None,
+            never_stop: false,
         }
     }
 
@@ -118,6 +120,11 @@ impl PyCMAESSettings {
 
     pub fn use_adapt_sigma_tpa(mut self, use_adapt_sigma_tpa: bool) -> Self {
         self.use_adapt_sigma_tpa = use_adapt_sigma_tpa;
+        self
+    }
+
+    pub fn never_stop(mut self, never_stop: bool) -> Self {
+        self.never_stop = never_stop;
         self
     }
 }
@@ -146,6 +153,7 @@ impl<T: Vectorizable + Clone> PyCMAES<T> {
                     pycmaes_settings.population_size,
                     pycmaes_settings.active,
                     pycmaes_settings.use_adapt_sigma_tpa,
+                    pycmaes_settings.never_stop,
                 ))
                 .unwrap();
 
@@ -255,7 +263,12 @@ import cma.sigma_adaptation
 from cma import restricted_gaussian_sampler as rgs
 import numpy as np
 
-def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None, use_adapt_sigma_tpa=False):
+class Opt:
+    def __init__(self, cmaes):
+        self.cmaes = cmaes
+        self.never_stop = False
+
+def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None, use_adapt_sigma_tpa=False, never_stop=False):
     opts = cma.CMAOptions()
     if active is not None:
         opts.set('CMA_active', active)
@@ -271,29 +284,30 @@ def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None
     if use_adapt_sigma_tpa:
         opts.set('AdaptSigma', cma.sigma_adaptation.CMAAdaptSigmaTPA)
 
-    result = cma.CMAEvolutionStrategy(initial, sigma, opts)
+    result = Opt(cmaes=cma.CMAEvolutionStrategy(initial, sigma, opts))
+    result.never_stop = never_stop
     return result
 
 def ask(optimizer):
-    if optimizer.stop():
+    if not optimizer.never_stop and optimizer.cmaes.stop():
         return []
-    result = optimizer.ask()
+    result = optimizer.cmaes.ask()
     result = list(map(list, result))
     return result
 
 def tell(optimizer, solutions):
     firsts = [x[0] for x in solutions]
     seconds = [x[1] for x in solutions]
-    optimizer.tell(firsts, seconds)
+    optimizer.cmaes.tell(firsts, seconds)
 
 def inject(optimizer, solutions):
-    optimizer.inject(solutions)
+    optimizer.cmaes.inject(solutions)
 
 def population_size(optimizer):
-    return optimizer.popsize
+    return optimizer.cmaes.popsize
 
 def get_sigma(optimizer):
-    return optimizer.sigma
+    return optimizer.cmaes.sigma
 "#
 );
 
