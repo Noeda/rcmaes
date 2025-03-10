@@ -4,6 +4,7 @@
  * https://people.idsia.ch/~juergen/gomez08a.pdf
  */
 
+use crate::trending_down_test::series_is_trending_down_log;
 use crate::vectorizable::Vectorizable;
 use rand::prelude::*;
 use rand::rng;
@@ -15,6 +16,18 @@ pub struct Cosyne<T: Vectorizable> {
     dimension: usize,
     settings: CosyneSettings,
     ctx: T::Context,
+
+    // One epoch = one round of ask/tell
+    epoch: usize,
+    // If adaptive sigma is used, then this tracks the fitness over past
+    // N epochs.
+    //
+    // Used in watermark-like way; we lit to grow to epoch_window*2, but
+    // we don't call the statistical test except for epoch_window.
+    //
+    // TODO: adjust trending_down_test to be able to take VecDeque or a closure or something
+    // (because inflexible interface is why this isn't a VecDeque).
+    fitness_history: Vec<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -24,6 +37,69 @@ pub struct CosyneSettings {
     sigma: f64,
     shrinkage_multiplier: f64,
     sampler: CosyneSampler,
+
+    adapt_sigma: Option<AdaptSigmaSettings>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AdaptSigmaSettings {
+    epoch_window: usize,
+    // these are probabilities in log
+    increase_sigma_threshold: f64,
+    decrease_sigma_threshold: f64,
+    fitness_mean: FitnessMean,
+}
+
+#[derive(Clone, Debug, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub enum FitnessMean {
+    Average,
+    Median,
+}
+
+impl AdaptSigmaSettings {
+    // epoch_window: How many epochs to consider for calculations
+    // that try to figure out if fitness is improving or not.
+    //
+    // This also sets the minimum possible number of epochs before
+    // a sigma adjustment.
+    //
+    // A good value is likely something like 50 at minimum; you
+    // need enough that a statistical test on previous epochs yields
+    // a meaningful result. 100 has been used successfully. Higher values
+    // mean slower adapting sigma, but also that it is less likely to adapt
+    // into the wrong direction because of a failed test.
+    pub fn self_adapting_sigma(epoch_window: usize) -> Self {
+        assert!(epoch_window > 0, "epoch_window must be greater than 0");
+        AdaptSigmaSettings {
+            epoch_window,
+            increase_sigma_threshold: (0.99_f64).ln(),
+            decrease_sigma_threshold: (0.5_f64).ln(),
+            fitness_mean: FitnessMean::Average,
+        }
+    }
+
+    pub fn increase_sigma_threshold(mut self, threshold: f64) -> Self {
+        assert!(
+            threshold >= 0.0 && threshold <= 1.0,
+            "increase_sigma_threshold must be in range [0.0..1.0]"
+        );
+        self.increase_sigma_threshold = threshold;
+        self
+    }
+
+    pub fn decrease_sigma_threshold(mut self, threshold: f64) -> Self {
+        assert!(
+            threshold >= 0.0 && threshold <= 1.0,
+            "decrease_sigma_threshold must be in range [0.0..1.0]"
+        );
+        self.decrease_sigma_threshold = threshold;
+        self
+    }
+
+    pub fn fitness_mean(mut self, fitness_mean: FitnessMean) -> Self {
+        self.fitness_mean = fitness_mean;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,6 +169,7 @@ impl CosyneSettings {
             sigma: 1.0,
             shrinkage_multiplier: 1.0,
             sampler: CosyneSampler::Cauchy,
+            adapt_sigma: Some(AdaptSigmaSettings::self_adapting_sigma(100)),
         }
     }
 
@@ -142,6 +219,12 @@ impl CosyneSettings {
         self.sampler = sampler;
         self
     }
+
+    // See AdaptSigmaSettings
+    pub fn adapt_sigma(mut self, adapt_sigma: Option<AdaptSigmaSettings>) -> Self {
+        self.adapt_sigma = adapt_sigma.clone();
+        self
+    }
 }
 
 impl<T: Clone + Vectorizable> Cosyne<T> {
@@ -172,6 +255,8 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
             dimension: vec.len(),
             population_raw: pop,
             ctx,
+            epoch: 0,
+            fitness_history: vec![],
         }
     }
 
@@ -185,6 +270,10 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
 
     pub fn sigma(&self) -> f64 {
         self.settings.sigma
+    }
+
+    pub fn epoch(&self) -> usize {
+        self.epoch
     }
 
     pub fn ask(&mut self) -> Vec<CosyneCandidate<T>> {
@@ -215,6 +304,19 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
                 .partial_cmp(&b.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        // median calculated for adaptive sigma
+        let median: f64 = if candidates.len() > 0 && candidates.len() % 2 == 0 {
+            let idx1 = candidates.len() / 2 - 1;
+            let idx2 = candidates.len() / 2;
+            (candidates[idx1].score + candidates[idx2].score) / 2.0
+        } else if candidates.len() > 0 {
+            candidates[candidates.len() / 2].score
+        } else {
+            0.0
+        };
+        let avg: f64 = candidates.iter().map(|c| c.score).sum::<f64>() / candidates.len() as f64;
+
         for idx in 0..self.settings.num_pop_replacement {
             let (cand_vec, _) = candidates[idx].item.to_vec();
             let ridx = idx + (self.settings.subpop_size - self.settings.num_pop_replacement);
@@ -236,6 +338,36 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
             let offset_end = (idx + 1) * self.settings.subpop_size;
             // Shuffle
             self.population_raw[offset_start..offset_end].shuffle(&mut rng);
+        }
+
+        self.epoch += 1;
+        if let Some(ref adapt_sigma) = self.settings.adapt_sigma {
+            match adapt_sigma.fitness_mean {
+                FitnessMean::Median => self.fitness_history.push(median),
+                FitnessMean::Average => self.fitness_history.push(avg),
+            }
+            let mut fitness_history_len = self.fitness_history.len();
+            if fitness_history_len > adapt_sigma.epoch_window * 2 {
+                self.fitness_history = (&self.fitness_history
+                    [fitness_history_len - adapt_sigma.epoch_window..])
+                    .to_owned();
+            }
+            fitness_history_len = self.fitness_history.len();
+            if fitness_history_len >= adapt_sigma.epoch_window {
+                // trending down (log) probability
+                let n_up = adapt_sigma.increase_sigma_threshold;
+                let n_down = adapt_sigma.decrease_sigma_threshold;
+                let p = series_is_trending_down_log(
+                    &self.fitness_history[fitness_history_len - adapt_sigma.epoch_window..],
+                );
+                if p > n_up {
+                    self.settings.sigma *= 2.0;
+                    self.fitness_history.clear();
+                } else if p < n_down {
+                    self.settings.sigma *= 0.5;
+                    self.fitness_history.clear();
+                }
+            }
         }
     }
 }
@@ -285,5 +417,51 @@ mod tests {
         }
         assert!((optimized.x - 2.0).abs() < 0.01);
         assert!((optimized.y - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    pub fn adaptable_sigma() {
+        // We test by using a badly initialized sigma on purpose. The adapting sigma should be much
+        // closer to the optimal value.
+
+        let mut cosyne_adapting = Cosyne::new(
+            &TwoPoly { x: 0.0, y: 0.0 },
+            &CosyneSettings::default()
+                .sigma(0.00001)
+                .adapt_sigma(Some(AdaptSigmaSettings::self_adapting_sigma(50))),
+        );
+        let mut cosyne_nonadapting = Cosyne::new(
+            &TwoPoly { x: 0.0, y: 0.0 },
+            &CosyneSettings::default().sigma(0.00001).adapt_sigma(None),
+        );
+
+        let epochs = 2000;
+        let mut best_adapting_score = std::f64::INFINITY;
+        let mut best_nonadapting_score = std::f64::INFINITY;
+        for _ in 0..epochs {
+            let mut cands_adapting = cosyne_adapting.ask();
+            let mut cands_nonadapting = cosyne_nonadapting.ask();
+
+            for cand in cands_adapting.iter_mut() {
+                let item = cand.item();
+                // Target 10000.0 10000.0 for both x and y
+                let score = (item.x - 10000.0).abs() + (item.y - 10000.0).abs();
+                cand.set_score(score);
+                if score < best_adapting_score {
+                    best_adapting_score = score;
+                }
+            }
+            for cand in cands_nonadapting.iter_mut() {
+                let item = cand.item();
+                let score = (item.x - 10000.0).abs() + (item.y - 10000.0).abs();
+                cand.set_score(score);
+                if score < best_nonadapting_score {
+                    best_nonadapting_score = score;
+                }
+            }
+            cosyne_adapting.tell(cands_adapting);
+            cosyne_nonadapting.tell(cands_nonadapting);
+        }
+        assert!(best_adapting_score < best_nonadapting_score);
     }
 }
