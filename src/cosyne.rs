@@ -47,6 +47,8 @@ pub struct AdaptSigmaSettings {
     // these are probabilities in log
     increase_sigma_threshold: f64,
     decrease_sigma_threshold: f64,
+    sigma_increase: f64,
+    sigma_decrease: f64,
     fitness_mean: FitnessMean,
 }
 
@@ -74,8 +76,20 @@ impl AdaptSigmaSettings {
             epoch_window,
             increase_sigma_threshold: (0.99_f64).ln(),
             decrease_sigma_threshold: (0.5_f64).ln(),
+            sigma_increase: 1.25,
+            sigma_decrease: 0.5,
             fitness_mean: FitnessMean::Average,
         }
+    }
+
+    pub fn sigma_increase(mut self, sigma_increase: f64) -> Self {
+        self.sigma_increase = sigma_increase;
+        self
+    }
+
+    pub fn sigma_decrease(mut self, sigma_decrease: f64) -> Self {
+        self.sigma_decrease = sigma_decrease;
+        self
     }
 
     pub fn increase_sigma_threshold(mut self, threshold: f64) -> Self {
@@ -361,10 +375,10 @@ impl<T: Clone + Vectorizable> Cosyne<T> {
                     &self.fitness_history[fitness_history_len - adapt_sigma.epoch_window..],
                 );
                 if p > n_up {
-                    self.settings.sigma *= 2.0;
+                    self.settings.sigma *= adapt_sigma.sigma_increase;
                     self.fitness_history.clear();
                 } else if p < n_down {
-                    self.settings.sigma *= 0.5;
+                    self.settings.sigma *= adapt_sigma.sigma_decrease;
                     self.fitness_history.clear();
                 }
             }
