@@ -1,5 +1,5 @@
 // This file contains the raw stuff to libcmaes
-use libc::{c_double, c_int, c_void};
+use libc::{c_double, c_int, c_void, size_t};
 
 #[link(name = "rcmaesglue", kind = "static")]
 #[link(name = "cmaes")]
@@ -13,15 +13,25 @@ extern "C" {
         sigma: c_double,
         lambda: c_int,
         num_coords: u64,
-        evaluate: extern "C" fn(
-            *const c_double,
-            *const c_int,
-            *const c_void,
-            *mut c_int,
-        ) -> c_double,
-        iterator: extern "C" fn(*const c_void) -> (),
+        evaluate: Option<
+            extern "C" fn(*const c_double, *const c_int, *const c_void, *mut c_int) -> c_double,
+        >,
+        iterator: Option<extern "C" fn(*const c_void) -> ()>,
+        tell_mvars: Option<
+            extern "C" fn(*const c_void, *const *const c_void, *const *const c_void, size_t) -> (),
+        >,
+        wait_until_dead: Option<extern "C" fn(*const c_void) -> ()>,
         userdata: *const c_void,
     );
+
+    pub fn cmaes_candidates_mvar_take(mvar: *const c_void) -> *const c_void;
+    pub fn cmaes_candidates_mvar_take_timeout(
+        mvar: *const c_void,
+        microseconds: c_int,
+    ) -> *const c_void;
+    pub fn cmaes_candidates_mvar_give(mvar: *const c_void, content: *const c_void) -> c_int;
+    pub fn cmaes_candidates_mvar_num_waiters(mvar: *const c_void) -> size_t;
+    pub fn cmaes_mark_as_dead_mvar(mvar: *const c_void);
 
     pub fn const_CMAES_DEFAULT() -> c_int;
     pub fn const_IPOP_CMAES() -> c_int;

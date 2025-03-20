@@ -14,8 +14,13 @@ pub mod vectorizable;
 
 pub use vectorizable::Vectorizable;
 
-use libc::{c_double, c_int, c_void};
-use std::sync::{Arc, Mutex, RwLock};
+use libc::{c_double, c_int, c_void, size_t};
+use std::collections::{BTreeMap, VecDeque};
+use std::marker::PhantomData;
+use std::ops::Deref;
+use std::pin::Pin;
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::thread;
 
 /// This structure contains some metadata about learning in last iteration of CMA-ES population.
 ///
@@ -49,6 +54,33 @@ impl Vectorizable for Vec<f64> {
     }
     fn from_vec(vec: &[f64], _: &Self::Context) -> Self {
         vec.to_owned()
+    }
+}
+
+// Pointer smuggler across thread boundary.
+#[derive(Clone, Ord, Eq, PartialOrd, PartialEq)]
+struct PointerSmuggler {
+    ptr: *const c_void,
+}
+
+unsafe impl Send for PointerSmuggler {}
+unsafe impl Sync for PointerSmuggler {}
+
+impl From<PointerSmuggler> for *const c_void {
+    fn from(ps: PointerSmuggler) -> Self {
+        ps.ptr
+    }
+}
+
+impl From<&PointerSmuggler> for *const c_void {
+    fn from(ps: &PointerSmuggler) -> Self {
+        ps.ptr
+    }
+}
+
+impl From<*const c_void> for PointerSmuggler {
+    fn from(ptr: *const c_void) -> Self {
+        PointerSmuggler { ptr }
     }
 }
 
@@ -191,10 +223,22 @@ impl Default for CMAESParameters {
     }
 }
 
-pub struct Userdata<'a> {
+struct Userdata<'a> {
     evaluate: Box<dyn Fn(&'a [f64]) -> (f64, CMAESContinue) + 'a>,
     iterate: Box<dyn FnMut() -> () + 'a>,
     d: usize,
+}
+
+struct MVars {
+    outgoing_free: VecDeque<(usize, PointerSmuggler)>,
+    outgoing_taken: BTreeMap<usize, PointerSmuggler>,
+    incoming: BTreeMap<usize, PointerSmuggler>,
+}
+
+struct UserdataAskTell {
+    mvars: Arc<Mutex<MVars>>,
+    mvars_cond: Arc<Condvar>,
+    mvars_ready_cond: Arc<(Mutex<bool>, Condvar)>,
 }
 
 extern "C" fn global_evaluate(
@@ -223,6 +267,45 @@ extern "C" fn global_iterator(userdata: *const c_void) {
         let userdata_ptr: *mut Userdata = userdata as *mut Userdata;
         let it = &mut (*userdata_ptr).iterate;
         it();
+    }
+}
+
+extern "C" fn global_tell_mvars(
+    userdata: *const c_void,
+    mvars_outgoing: *const *const c_void,
+    mvars_incoming: *const *const c_void,
+    num_mvars: size_t,
+) {
+    unsafe {
+        let userdata = userdata as *const UserdataAskTell;
+        let userdata_ptr: *const UserdataAskTell = userdata;
+        {
+            let mut mvars = (*userdata_ptr).mvars.lock().unwrap();
+            for i in 0..num_mvars {
+                let mvar_outgoing_ptr = *mvars_outgoing.offset(i as isize);
+                mvars.outgoing_free.push_back((i, mvar_outgoing_ptr.into()));
+                let mvar_incoming_ptr = *mvars_incoming.offset(i as isize);
+                mvars.incoming.insert(i, mvar_incoming_ptr.into());
+            }
+        }
+        {
+            let mut ready = (*userdata).mvars_ready_cond.0.lock().unwrap();
+            *ready = true;
+        }
+        let _mrc = (*userdata).mvars_ready_cond.0.lock().unwrap();
+        (*userdata).mvars_ready_cond.1.notify_all();
+    }
+}
+
+extern "C" fn global_wait_until_dead(userdata: *const c_void) {
+    unsafe {
+        let userdata_ptr: *const UserdataAskTell = userdata as *const UserdataAskTell;
+        {
+            let mut mvars = (*userdata_ptr).mvars.lock().unwrap();
+            mvars.outgoing_free.clear();
+            mvars.outgoing_taken.clear();
+            mvars.incoming.clear();
+        }
     }
 }
 
@@ -442,8 +525,10 @@ where
             params.sigma(),
             params.pop_size() as i32,
             initial_vec.len() as u64,
-            global_evaluate,
-            global_iterator,
+            Some(global_evaluate),
+            Some(global_iterator),
+            None,
+            None,
             (&userdata as *const Userdata) as *const c_void,
         );
     }
@@ -451,6 +536,218 @@ where
     match *bsp {
         None => None,
         Some((ref thing, score)) => Some((thing.clone(), score)),
+    }
+}
+
+pub struct CMAES<T: Vectorizable> {
+    dim: usize,
+    worker: Option<thread::JoinHandle<()>>,
+    phantom: PhantomData<T>,
+    userdata: Pin<Box<UserdataAskTell>>,
+    pop_size: usize,
+    asked: bool,
+    dead: bool,
+    ctx: <T as Vectorizable>::Context,
+}
+
+#[derive(Clone, Debug)]
+pub struct CMAESCandidate<T> {
+    item: T,
+    score: f64,
+    idx: usize,
+}
+
+impl<T> CMAESCandidate<T> {
+    pub fn item(&self) -> &T {
+        &self.item
+    }
+
+    pub fn score(&self) -> f64 {
+        self.score
+    }
+
+    pub fn set_score(&mut self, score: f64) {
+        self.score = score;
+    }
+
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+}
+
+// Drop needed to override default 'worker' drop behavior that detaches a thread.
+impl<T: Vectorizable> Drop for CMAES<T> {
+    fn drop(&mut self) {
+        {
+            let mvars = self.userdata.mvars.lock().unwrap();
+            for (_, i) in mvars.outgoing_free.iter() {
+                unsafe {
+                    raw::cmaes_mark_as_dead_mvar(i.into());
+                }
+            }
+            for (_, i) in mvars.incoming.iter() {
+                unsafe {
+                    raw::cmaes_mark_as_dead_mvar(i.into());
+                }
+            }
+            for (_, i) in mvars.outgoing_taken.iter() {
+                unsafe {
+                    raw::cmaes_mark_as_dead_mvar(i.into());
+                }
+            }
+        }
+
+        let mut empty = None;
+        std::mem::swap(&mut self.worker, &mut empty);
+        if let Some(worker) = empty {
+            worker.join().unwrap();
+        }
+    }
+}
+
+impl<T: Clone + Vectorizable> CMAES<T> {
+    pub fn new(initial: &T, params: &CMAESParameters) -> Self {
+        let (mut vec, ctx) = initial.to_vec();
+        let dim = vec.len();
+        let params = params.clone();
+
+        let userdata = Box::pin(UserdataAskTell {
+            mvars: Arc::new(Mutex::new(MVars {
+                outgoing_free: VecDeque::new(),
+                outgoing_taken: BTreeMap::new(),
+                incoming: BTreeMap::new(),
+            })),
+            mvars_cond: Arc::new(Condvar::new()),
+            mvars_ready_cond: Arc::new((Mutex::new(false), Condvar::new())),
+        });
+        let userdata_ptr: PointerSmuggler =
+            (userdata.deref() as *const UserdataAskTell as *const c_void).into();
+
+        let worker = thread::spawn(move || {
+            let userdata_ptr: *const c_void = userdata_ptr.into();
+            let vec_ptr: *mut f64 = vec.as_mut_ptr();
+            unsafe {
+                raw::cmaes_optimize(
+                    if params.m_noisy { 1 } else { 0 },
+                    if params.m_use_elitism { 1 } else { 0 },
+                    if params.m_use_surrogates { 1 } else { 0 },
+                    params.algo().to_c_int(),
+                    vec_ptr,
+                    params.sigma(),
+                    params.pop_size() as i32,
+                    dim as u64,
+                    None,
+                    None,
+                    Some(global_tell_mvars),
+                    Some(global_wait_until_dead),
+                    (userdata_ptr as *const UserdataAskTell) as *const c_void,
+                )
+            }
+        });
+
+        {
+            loop {
+                let mrc_lock = userdata.mvars_ready_cond.0.lock().unwrap();
+                let mrc = userdata.mvars_ready_cond.1.wait(mrc_lock).unwrap();
+                if !*mrc {
+                    continue;
+                }
+                break;
+            }
+        }
+
+        CMAES {
+            dim,
+            pop_size: params.pop_size(),
+            worker: Some(worker),
+            phantom: PhantomData,
+            userdata: userdata,
+            asked: false,
+            dead: false,
+            ctx,
+        }
+    }
+
+    pub fn ask(&mut self) -> Vec<CMAESCandidate<T>> {
+        assert!(!self.asked);
+        assert!(!self.dead);
+        self.asked = true;
+
+        let fifty_ms = 50000;
+
+        let mut result = Vec::with_capacity(self.pop_size);
+        {
+            {
+                let mut mvars = self.userdata.mvars.lock().unwrap();
+                while mvars.outgoing_free.is_empty() {
+                    mvars = self.userdata.mvars_cond.wait(mvars).unwrap();
+                }
+                let first_outgoing_mvar = mvars.outgoing_free.pop_front().unwrap();
+
+                let result_item = unsafe {
+                    if result.len() > 0 {
+                        raw::cmaes_candidates_mvar_take_timeout(
+                            first_outgoing_mvar.1.clone().into(),
+                            fifty_ms,
+                        )
+                    } else {
+                        raw::cmaes_candidates_mvar_take(first_outgoing_mvar.1.clone().into())
+                    }
+                };
+
+                if result_item.is_null() {
+                    mvars.outgoing_free.push_front(first_outgoing_mvar);
+                    return result;
+                }
+                mvars
+                    .outgoing_taken
+                    .insert(first_outgoing_mvar.0, first_outgoing_mvar.1);
+
+                let params: *const f64 = result_item as *const f64;
+                let vec: &[f64] = unsafe { std::slice::from_raw_parts(params, self.dim) };
+
+                let item = T::from_vec(vec, &self.ctx);
+                result.push(CMAESCandidate {
+                    item,
+                    score: 0.0,
+                    idx: first_outgoing_mvar.0,
+                });
+            }
+        }
+        result
+    }
+
+    pub fn tell(&mut self, candidates: Vec<CMAESCandidate<T>>) {
+        assert!(self.asked);
+        assert!(!self.dead);
+        self.asked = false;
+
+        {
+            let mut mvars = self.userdata.mvars.lock().unwrap();
+            for candidate in candidates.iter() {
+                let idx: usize = candidate.idx;
+
+                let mvar_incoming = mvars.incoming.get(&idx).unwrap().clone();
+                let ot = mvars.outgoing_taken.remove(&idx).unwrap();
+                mvars.outgoing_free.push_back((idx, ot));
+
+                let mut score: *mut c_void = std::ptr::null_mut();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        &candidate.score as *const f64 as *const f64,
+                        (&mut score) as *mut *mut c_void as *mut f64,
+                        1,
+                    );
+                }
+
+                let result =
+                    unsafe { raw::cmaes_candidates_mvar_give(mvar_incoming.into(), score) };
+                if result == 0 {
+                    self.dead = true;
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -533,5 +830,26 @@ mod tests {
         .unwrap();
         assert!((optimized.0.x - 25.0).abs() > 0.00001);
         assert!((optimized.0.y - 1.0).abs() > 0.00001);
+    }
+
+    #[test]
+    pub fn ask_tell() {
+        let mut cma = CMAES::new(&TwoPoly { x: 5.0, y: 6.0 }, &CMAESParameters::default());
+
+        let mut epochs: usize = 1000;
+        let mut best_score: f64 = 10000000.0;
+        while epochs > 0 {
+            epochs -= 1;
+            let mut candidates = cma.ask();
+            for candidate in candidates.iter_mut() {
+                let score = (candidate.item.x - 117.0).abs() + (candidate.item.y - (-87.0)).abs();
+                if score < best_score {
+                    best_score = score;
+                }
+                candidate.set_score(score);
+            }
+            cma.tell(candidates);
+        }
+        assert!((best_score - 0.0).abs() < 0.00001);
     }
 }
