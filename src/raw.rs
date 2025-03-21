@@ -16,7 +16,7 @@ extern "C" {
         evaluate: Option<
             extern "C" fn(*const c_double, *const c_int, *const c_void, *mut c_int) -> c_double,
         >,
-        iterator: Option<extern "C" fn(*const c_void) -> ()>,
+        iterator: Option<extern "C" fn(*const c_void, c_double) -> ()>,
         tell_mvars: Option<
             extern "C" fn(*const c_void, *const *const c_void, *const *const c_void, size_t) -> (),
         >,
@@ -24,10 +24,11 @@ extern "C" {
         userdata: *const c_void,
     );
 
-    pub fn cmaes_candidates_mvar_take(mvar: *const c_void) -> *const c_void;
+    pub fn cmaes_candidates_mvar_take(mvar: *const c_void, success: *mut c_int) -> *const c_void;
     pub fn cmaes_candidates_mvar_take_timeout(
         mvar: *const c_void,
         microseconds: i64,
+        success: *mut c_int,
     ) -> *const c_void;
     pub fn cmaes_candidates_mvar_give(mvar: *const c_void, content: *const c_void) -> c_int;
     pub fn cmaes_candidates_mvar_num_waiters(mvar: *const c_void) -> size_t;

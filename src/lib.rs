@@ -239,6 +239,9 @@ struct UserdataAskTell {
     mvars: Arc<Mutex<MVars>>,
     mvars_cond: Arc<Condvar>,
     mvars_ready_cond: Arc<(Mutex<bool>, Condvar)>,
+
+    // populated by libcmaes library by calling our global_iterator_asktell
+    sigma: Arc<Mutex<f64>>,
 }
 
 extern "C" fn global_evaluate(
@@ -262,11 +265,19 @@ extern "C" fn global_evaluate(
     }
 }
 
-extern "C" fn global_iterator(userdata: *const c_void) {
+extern "C" fn global_iterator(userdata: *const c_void, _sigma: c_double) {
     unsafe {
         let userdata_ptr: *mut Userdata = userdata as *mut Userdata;
         let it = &mut (*userdata_ptr).iterate;
         it();
+    }
+}
+
+extern "C" fn global_iterator_asktell(userdata: *const c_void, sigma: c_double) {
+    unsafe {
+        let userdata_ptr: *const UserdataAskTell = userdata as *const UserdataAskTell;
+        let mut lock_sigma = (*userdata_ptr).sigma.lock().unwrap();
+        *lock_sigma = sigma;
     }
 }
 
@@ -620,6 +631,7 @@ impl<T: Clone + Vectorizable> CMAES<T> {
             })),
             mvars_cond: Arc::new(Condvar::new()),
             mvars_ready_cond: Arc::new((Mutex::new(false), Condvar::new())),
+            sigma: Arc::new(Mutex::new(params.sigma())),
         });
         let userdata_ptr: PointerSmuggler =
             (userdata.deref() as *const UserdataAskTell as *const c_void).into();
@@ -638,7 +650,7 @@ impl<T: Clone + Vectorizable> CMAES<T> {
                     params.pop_size() as i32,
                     dim as u64,
                     None,
-                    None,
+                    Some(global_iterator_asktell),
                     Some(global_tell_mvars),
                     Some(global_wait_until_dead),
                     (userdata_ptr as *const UserdataAskTell) as *const c_void,
@@ -690,25 +702,33 @@ impl<T: Clone + Vectorizable> CMAES<T> {
                 }
                 let first_outgoing_mvar = mvars.outgoing_free.pop_front().unwrap();
 
+                let mut success: c_int = 0;
+                let success_mptr: *mut c_int = &mut success as *mut c_int;
+
                 let result_item = unsafe {
                     if result.len() > 0 {
                         if result.len() < self.guessed_openmp_nthreads {
                             raw::cmaes_candidates_mvar_take_timeout(
                                 first_outgoing_mvar.1.clone().into(),
                                 fifty_ms,
+                                success_mptr,
                             )
                         } else {
                             raw::cmaes_candidates_mvar_take_timeout(
                                 first_outgoing_mvar.1.clone().into(),
                                 0,
+                                success_mptr,
                             )
                         }
                     } else {
-                        raw::cmaes_candidates_mvar_take(first_outgoing_mvar.1.clone().into())
+                        raw::cmaes_candidates_mvar_take(
+                            first_outgoing_mvar.1.clone().into(),
+                            success_mptr,
+                        )
                     }
                 };
 
-                if result_item.is_null() {
+                if unsafe { *success_mptr } == 0 {
                     mvars.outgoing_free.push_front(first_outgoing_mvar);
                     return result;
                 }
@@ -764,7 +784,8 @@ impl<T: Clone + Vectorizable> CMAES<T> {
     }
 
     pub fn sigma(&self) -> f64 {
-        1.0
+        let lock_sigma = self.userdata.sigma.lock().unwrap();
+        *lock_sigma
     }
 }
 
@@ -851,25 +872,31 @@ mod tests {
 
     #[test]
     pub fn ask_tell() {
-        let mut cma = CMAES::new(&TwoPoly { x: 5.0, y: 6.0 }, &CMAESParameters::default());
+        // run the whole thing many times (I had bugs that only happened rarely)
+        for idx in 0..100 {
+            println!("{}", idx);
+            //
+            let mut cma = CMAES::new(&TwoPoly { x: 5.0, y: 6.0 }, &CMAESParameters::default());
 
-        let mut epochs: usize = 1000;
-        let mut best_score: f64 = 10000000.0;
-        while epochs > 0 {
-            epochs -= 1;
-            let mut candidates = cma.ask();
-            if candidates.is_empty() {
-                break;
-            }
-            for candidate in candidates.iter_mut() {
-                let score = (candidate.item.x - 117.0).abs() + (candidate.item.y - (-87.0)).abs();
-                if score < best_score {
-                    best_score = score;
+            let mut epochs: usize = 1000;
+            let mut best_score: f64 = 10000000.0;
+            while epochs > 0 {
+                epochs -= 1;
+                let mut candidates = cma.ask();
+                if candidates.is_empty() {
+                    break;
                 }
-                candidate.set_score(score);
+                for candidate in candidates.iter_mut() {
+                    let score =
+                        (candidate.item.x - 117.0).abs() + (candidate.item.y - (-87.0)).abs();
+                    if score < best_score {
+                        best_score = score;
+                    }
+                    candidate.set_score(score);
+                }
+                cma.tell(candidates);
             }
-            cma.tell(candidates);
+            assert!((best_score - 0.0).abs() < 0.00001);
         }
-        assert!((best_score - 0.0).abs() < 0.00001);
     }
 }

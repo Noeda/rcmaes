@@ -14,6 +14,7 @@ typedef struct scmaes_candidates_mvar {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     void* content;
+    int has_content;
     int nwaiters;
     int should_die;
 } cmaes_candidates_mvar;
@@ -29,7 +30,7 @@ extern "C" {
             int lambda,
             uint64_t num_coords,
             double (*evaluate)(double*, int*, void*, int*),
-            void (*iter)(void*),
+            void (*iter)(void*, double),
             void (*tell_mvars)(void*, cmaes_candidates_mvar**, cmaes_candidates_mvar**, size_t),
             void (*wait_until_dead)(void*), // tells Rust to clean up, does not
                                             // return until clean up is done on
@@ -38,8 +39,8 @@ extern "C" {
     cmaes_candidates_mvar* cmaes_make_candidates_mvar(void);
     void cmaes_mark_as_dead_mvar(cmaes_candidates_mvar* mvar);
     void cmaes_free_candidates_mvar(cmaes_candidates_mvar* mvar);
-    void* cmaes_candidates_mvar_take(cmaes_candidates_mvar* mvar);
-    void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t microseconds);
+    void* cmaes_candidates_mvar_take(cmaes_candidates_mvar* mvar, int* success);
+    void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t microseconds, int* success);
     int cmaes_candidates_mvar_give(cmaes_candidates_mvar* mvar, void* content);
     size_t cmaes_candidates_mvar_num_waiters(cmaes_candidates_mvar* mvar);
     int guess_number_of_omp_threads(void);
@@ -123,31 +124,35 @@ size_t cmaes_candidates_mvar_num_waiters(cmaes_candidates_mvar* mvar) {
     return nwaiters;
 }
 
-void* cmaes_candidates_mvar_take(cmaes_candidates_mvar* mvar) {
+void* cmaes_candidates_mvar_take(cmaes_candidates_mvar* mvar, int* success) {
     pthread_mutex_lock(&mvar->lock);
     if (mvar->should_die) {
         pthread_mutex_unlock(&mvar->lock);
+        (*success) = 0;
         return 0;
     }
 
     mvar->nwaiters++;
-    while (mvar->content == 0 && !mvar->should_die) {
+    while (!mvar->has_content && !mvar->should_die) {
         pthread_cond_wait(&mvar->cond, &mvar->lock);
     }
     mvar->nwaiters--;
     if (mvar->should_die) {
         pthread_mutex_unlock(&mvar->lock);
+        (*success) = 0;
         return 0;
     }
 
     void* content = mvar->content;
     mvar->content = 0;
+    mvar->has_content = 0;
     pthread_cond_signal(&mvar->cond);
     pthread_mutex_unlock(&mvar->lock);
+    (*success) = 1;
     return content;
 }
 
-void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t microseconds) {
+void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t microseconds, int* success) {
     struct timespec ts;
     struct timeval tv;
     memset(&ts, 0, sizeof(ts));
@@ -158,6 +163,7 @@ void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t mi
     pthread_mutex_lock(&mvar->lock);
     if (mvar->should_die) {
         pthread_mutex_unlock(&mvar->lock);
+        (*success) = 0;
         return 0;
     }
 
@@ -170,32 +176,34 @@ void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t mi
     }
 
     mvar->nwaiters++;
-    while (mvar->content == 0 && !mvar->should_die) {
+    while (!mvar->has_content && !mvar->should_die) {
         if (pthread_cond_timedwait(&mvar->cond, &mvar->lock, &ts) == ETIMEDOUT) {
-            if (mvar->content) {
+            if (mvar->has_content) {
                 break;
             }
             mvar->nwaiters--;
             pthread_mutex_unlock(&mvar->lock);
+            (*success) = 0;
             return 0;
         }
     }
     mvar->nwaiters--;
     if (mvar->should_die) {
         pthread_mutex_unlock(&mvar->lock);
+        (*success) = 0;
         return 0;
     }
 
     void* content = mvar->content;
     mvar->content = 0;
+    mvar->has_content = 0;
     pthread_cond_signal(&mvar->cond);
     pthread_mutex_unlock(&mvar->lock);
+    (*success) = 1;
     return content;
 }
 
 int cmaes_candidates_mvar_give(cmaes_candidates_mvar* mvar, void* content) {
-    assert(content);
-
     if (mvar->should_die) {
         return 0;
     }
@@ -207,7 +215,7 @@ int cmaes_candidates_mvar_give(cmaes_candidates_mvar* mvar, void* content) {
     }
 
     mvar->nwaiters++;
-    while (mvar->content != 0 && !mvar->should_die) {
+    while (mvar->has_content && !mvar->should_die) {
         pthread_cond_wait(&mvar->cond, &mvar->lock);
     }
     mvar->nwaiters--;
@@ -217,6 +225,7 @@ int cmaes_candidates_mvar_give(cmaes_candidates_mvar* mvar, void* content) {
     }
 
     mvar->content = content;
+    mvar->has_content = 1;
     pthread_cond_signal(&mvar->cond);
     pthread_mutex_unlock(&mvar->lock);
     return 1;
@@ -257,7 +266,7 @@ void cmaes_optimize(
         int lambda,
         uint64_t num_coords,
         double (*evaluate)(double*, int*, void*, int*),
-        void (*iter)(void*),
+        void (*iter)(void*, double),
         void (*tell_mvars)(void*, cmaes_candidates_mvar**, cmaes_candidates_mvar**, size_t),
         void (*wait_until_dead)(void*), // tells Rust to clean up, does not
                                         // return until clean up is done on
@@ -322,6 +331,8 @@ void cmaes_optimize(
     int num_fits_in_flight = 0;
 
     FitFunc fit = [&num_fits_in_flight, &observe_threads_lock, &uses_threaded_candidates, &cand_idx, &should_stop, &evaluate, &userdata, &sols, &candidates_mvars_outgoing, &candidates_mvars_incoming, &candidates_lock](const double* params, const int N) {
+        assert(params);
+
         ((void) N);
         int dumb = 0;
         int stop = 0;
@@ -346,7 +357,9 @@ void cmaes_optimize(
                 stop = 1;
             } else {
                 void* content = NULL;
-                if (!(content = cmaes_candidates_mvar_take(cvar_incoming))) {
+                int success = 0;
+                content = cmaes_candidates_mvar_take(cvar_incoming, &success);
+                if (!success) {
                     stop = 1;
                 } else {
                     memcpy(&result, &content, sizeof(double));
@@ -383,8 +396,9 @@ void cmaes_optimize(
                 (*sols).*get(access_run_status()) = -1;
             }
         }
+        double sigma = cmasolutions.sigma();
         if (iter) {
-            iter(userdata);
+            iter(userdata, sigma);
         }
         return 0;
     };
