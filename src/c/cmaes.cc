@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/time.h>
 
 using namespace libcmaes;
 
@@ -38,9 +39,10 @@ extern "C" {
     void cmaes_mark_as_dead_mvar(cmaes_candidates_mvar* mvar);
     void cmaes_free_candidates_mvar(cmaes_candidates_mvar* mvar);
     void* cmaes_candidates_mvar_take(cmaes_candidates_mvar* mvar);
-    void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int microseconds);
+    void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t microseconds);
     int cmaes_candidates_mvar_give(cmaes_candidates_mvar* mvar, void* content);
     size_t cmaes_candidates_mvar_num_waiters(cmaes_candidates_mvar* mvar);
+    int guess_number_of_omp_threads(void);
 }
 
 template<typename Tag, typename Tag::type M>
@@ -145,21 +147,34 @@ void* cmaes_candidates_mvar_take(cmaes_candidates_mvar* mvar) {
     return content;
 }
 
-void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int microseconds) {
+void* cmaes_candidates_mvar_take_timeout(cmaes_candidates_mvar* mvar, int64_t microseconds) {
+    struct timespec ts;
+    struct timeval tv;
+    memset(&ts, 0, sizeof(ts));
+    memset(&tv, 0, sizeof(tv));
+
+    gettimeofday(&tv, NULL);
+
     pthread_mutex_lock(&mvar->lock);
     if (mvar->should_die) {
         pthread_mutex_unlock(&mvar->lock);
         return 0;
     }
 
-    struct timespec ts;
-    memset(&ts, 0, sizeof(ts));
-    ts.tv_sec = (int64_t) microseconds / 1000000;
-    ts.tv_nsec = ((int64_t) microseconds % 1000000) * 1000;
+    ts.tv_sec = tv.tv_sec + (microseconds / 1000000L);
+    ts.tv_nsec = (tv.tv_usec * 1000L) + (microseconds % 1000000L) * 1000L;
+
+    while (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
 
     mvar->nwaiters++;
     while (mvar->content == 0 && !mvar->should_die) {
         if (pthread_cond_timedwait(&mvar->cond, &mvar->lock, &ts) == ETIMEDOUT) {
+            if (mvar->content) {
+                break;
+            }
             mvar->nwaiters--;
             pthread_mutex_unlock(&mvar->lock);
             return 0;
@@ -205,6 +220,31 @@ int cmaes_candidates_mvar_give(cmaes_candidates_mvar* mvar, void* content) {
     pthread_cond_signal(&mvar->cond);
     pthread_mutex_unlock(&mvar->lock);
     return 1;
+}
+
+static pthread_mutex_t guess_threads_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t num_threads_lock = PTHREAD_MUTEX_INITIALIZER;
+static int num_threads = 1;
+
+int guess_number_of_omp_threads(void) {
+    // The C++ libcmaes uses openmp to launch off threads.
+    // We use this to guess how many threads that might be.
+    // This library doesn't catastrophically fail if we get it wrong, but
+    // it helps making sure the ask/tell interface (hacked together with
+    // threads because the C++ API doesn't support ask/tell interface
+    // natively) is efficiently using all the threads it could.
+    int new_num_threads = 0;
+    #pragma omp parallel reduction(+:num_threads)
+    new_num_threads += 1;
+
+    pthread_mutex_lock(&guess_threads_lock);
+    pthread_mutex_lock(&num_threads_lock);
+    if (new_num_threads > num_threads) {
+        num_threads = new_num_threads;
+    }
+    pthread_mutex_unlock(&num_threads_lock);
+    pthread_mutex_unlock(&guess_threads_lock);
+    return num_threads;
 }
 
 void cmaes_optimize(
@@ -271,11 +311,30 @@ void cmaes_optimize(
 
     size_t cand_idx = 0;
 
-    FitFunc fit = [&uses_threaded_candidates, &cand_idx, &should_stop, &evaluate, &userdata, &sols, &candidates_mvars_outgoing, &candidates_mvars_incoming, &candidates_lock](const double* params, const int N) {
+    // estimate threads by observing how many concurrent fit functions
+    // invocations we observe. (this is on top of heuristic in
+    // guess_number_of_omp_threads)
+    pthread_mutex_t observe_threads_lock;
+    if (pthread_mutex_init(&observe_threads_lock, 0)) {
+        fprintf(stderr, "pthread_mutex_init failed\n");
+        exit(1);
+    }
+    int num_fits_in_flight = 0;
+
+    FitFunc fit = [&num_fits_in_flight, &observe_threads_lock, &uses_threaded_candidates, &cand_idx, &should_stop, &evaluate, &userdata, &sols, &candidates_mvars_outgoing, &candidates_mvars_incoming, &candidates_lock](const double* params, const int N) {
         ((void) N);
         int dumb = 0;
         int stop = 0;
         double result = 0.0;
+
+        pthread_mutex_lock(&observe_threads_lock);
+        pthread_mutex_lock(&num_threads_lock);
+        num_fits_in_flight += 1;
+        if (num_fits_in_flight > num_threads) {
+            num_threads = num_fits_in_flight;
+        }
+        pthread_mutex_unlock(&num_threads_lock);
+        pthread_mutex_unlock(&observe_threads_lock);
 
         if (uses_threaded_candidates) {
             pthread_mutex_lock(&candidates_lock);
@@ -303,6 +362,15 @@ void cmaes_optimize(
                 (*sols).*get(access_run_status()) = -1;
             }
         }
+
+        pthread_mutex_lock(&observe_threads_lock);
+        pthread_mutex_lock(&num_threads_lock);
+        if (num_fits_in_flight > num_threads) {
+            num_threads = num_fits_in_flight;
+        }
+        num_fits_in_flight -= 1;
+        pthread_mutex_unlock(&num_threads_lock);
+        pthread_mutex_unlock(&observe_threads_lock);
         return result;
     };
 
@@ -345,6 +413,7 @@ void cmaes_optimize(
         initial[i1] = out[i1];
     }
 
+    pthread_mutex_destroy(&observe_threads_lock);
     CLEANUP;
 }
 

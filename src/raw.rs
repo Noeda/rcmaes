@@ -27,11 +27,13 @@ extern "C" {
     pub fn cmaes_candidates_mvar_take(mvar: *const c_void) -> *const c_void;
     pub fn cmaes_candidates_mvar_take_timeout(
         mvar: *const c_void,
-        microseconds: c_int,
+        microseconds: i64,
     ) -> *const c_void;
     pub fn cmaes_candidates_mvar_give(mvar: *const c_void, content: *const c_void) -> c_int;
     pub fn cmaes_candidates_mvar_num_waiters(mvar: *const c_void) -> size_t;
     pub fn cmaes_mark_as_dead_mvar(mvar: *const c_void);
+
+    pub fn guess_number_of_omp_threads() -> c_int;
 
     pub fn const_CMAES_DEFAULT() -> c_int;
     pub fn const_IPOP_CMAES() -> c_int;

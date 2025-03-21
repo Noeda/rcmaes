@@ -213,7 +213,7 @@ impl CMAESParameters {
 impl Default for CMAESParameters {
     fn default() -> Self {
         CMAESParameters {
-            m_pop_size: 10,
+            m_pop_size: 1000,
             m_algo: CMAESAlgo::Default,
             m_sigma: 1.0,
             m_use_surrogates: false,
@@ -547,6 +547,7 @@ pub struct CMAES<T: Vectorizable> {
     pop_size: usize,
     asked: bool,
     dead: bool,
+    guessed_openmp_nthreads: usize,
     ctx: <T as Vectorizable>::Context,
 }
 
@@ -656,8 +657,11 @@ impl<T: Clone + Vectorizable> CMAES<T> {
             }
         }
 
+        let guessed_openmp_nthreads = unsafe { raw::guess_number_of_omp_threads() };
+
         CMAES {
             dim,
+            guessed_openmp_nthreads: guessed_openmp_nthreads as usize,
             pop_size: params.pop_size(),
             worker: Some(worker),
             phantom: PhantomData,
@@ -673,11 +677,13 @@ impl<T: Clone + Vectorizable> CMAES<T> {
         assert!(!self.dead);
         self.asked = true;
 
+        self.guessed_openmp_nthreads = unsafe { raw::guess_number_of_omp_threads() as usize };
+
         let fifty_ms = 50000;
 
         let mut result = Vec::with_capacity(self.pop_size);
         {
-            {
+            while result.len() < self.pop_size {
                 let mut mvars = self.userdata.mvars.lock().unwrap();
                 while mvars.outgoing_free.is_empty() {
                     mvars = self.userdata.mvars_cond.wait(mvars).unwrap();
@@ -686,10 +692,17 @@ impl<T: Clone + Vectorizable> CMAES<T> {
 
                 let result_item = unsafe {
                     if result.len() > 0 {
-                        raw::cmaes_candidates_mvar_take_timeout(
-                            first_outgoing_mvar.1.clone().into(),
-                            fifty_ms,
-                        )
+                        if result.len() < self.guessed_openmp_nthreads {
+                            raw::cmaes_candidates_mvar_take_timeout(
+                                first_outgoing_mvar.1.clone().into(),
+                                fifty_ms,
+                            )
+                        } else {
+                            raw::cmaes_candidates_mvar_take_timeout(
+                                first_outgoing_mvar.1.clone().into(),
+                                0,
+                            )
+                        }
                     } else {
                         raw::cmaes_candidates_mvar_take(first_outgoing_mvar.1.clone().into())
                     }
@@ -748,6 +761,10 @@ impl<T: Clone + Vectorizable> CMAES<T> {
                 }
             }
         }
+    }
+
+    pub fn sigma(&self) -> f64 {
+        1.0
     }
 }
 
@@ -841,6 +858,9 @@ mod tests {
         while epochs > 0 {
             epochs -= 1;
             let mut candidates = cma.ask();
+            if candidates.is_empty() {
+                break;
+            }
             for candidate in candidates.iter_mut() {
                 let score = (candidate.item.x - 117.0).abs() + (candidate.item.y - (-87.0)).abs();
                 if score < best_score {
