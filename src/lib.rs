@@ -213,7 +213,7 @@ impl CMAESParameters {
 impl Default for CMAESParameters {
     fn default() -> Self {
         CMAESParameters {
-            m_pop_size: 1000,
+            m_pop_size: 10,
             m_algo: CMAESAlgo::Default,
             m_sigma: 1.0,
             m_use_surrogates: false,
