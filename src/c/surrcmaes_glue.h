@@ -3,15 +3,18 @@
 namespace libcmaes
 {
   template <class TGenoPheno=GenoPheno<NoBoundStrategy> >
-  CMASolutions CMAES_EXPORT surrcmaes(FitFunc &func,
+  CMASolutions CMAES_EXPORT surrcmaes_rsvm(FitFunc &func,
 			 CMAParameters<TGenoPheno> &parameters,
-                         ProgressFunc<CMAParameters<TGenoPheno>,CMASolutions> &pfunc=CMAStrategy<CovarianceUpdate,TGenoPheno>::_defaultPFunc)
+                         ProgressFunc<CMAParameters<TGenoPheno>,CMASolutions> &pfunc=CMAStrategy<CovarianceUpdate,TGenoPheno>::_defaultPFunc, int niters=0)
     {
       switch(parameters.get_algo())
 	{
 	case CMAES_DEFAULT:
 	{
 	  ESOptimizer<RSVMSurrogateStrategy<CMAStrategy,CovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -19,6 +22,9 @@ namespace libcmaes
 	case IPOP_CMAES:
 	{
 	  ESOptimizer<RSVMSurrogateStrategy<IPOPCMAStrategy,CovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -26,6 +32,9 @@ namespace libcmaes
 	case BIPOP_CMAES:
 	{
 	  ESOptimizer<RSVMSurrogateStrategy<BIPOPCMAStrategy,CovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -33,6 +42,9 @@ namespace libcmaes
 	case aCMAES:
 	{
 	  ESOptimizer<RSVMSurrogateStrategy<CMAStrategy,ACovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -40,6 +52,9 @@ namespace libcmaes
 	case aIPOP_CMAES:
 	{
 	  ESOptimizer<RSVMSurrogateStrategy<IPOPCMAStrategy,ACovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -47,6 +62,9 @@ namespace libcmaes
 	case aBIPOP_CMAES:
 	{
 	  ESOptimizer<RSVMSurrogateStrategy<BIPOPCMAStrategy,ACovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -55,6 +73,9 @@ namespace libcmaes
 	{
 	  parameters.set_sep();
 	  ESOptimizer<RSVMSurrogateStrategy<CMAStrategy,CovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -63,6 +84,9 @@ namespace libcmaes
 	{
 	  parameters.set_sep();
 	  ESOptimizer<RSVMSurrogateStrategy<IPOPCMAStrategy,CovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -71,6 +95,9 @@ namespace libcmaes
 	{
 	  parameters.set_sep();
 	  ESOptimizer<RSVMSurrogateStrategy<BIPOPCMAStrategy,CovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -79,6 +106,9 @@ namespace libcmaes
 	{
 	  parameters.set_sep();
 	  ESOptimizer<RSVMSurrogateStrategy<CMAStrategy,ACovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -87,6 +117,9 @@ namespace libcmaes
 	{
 	  parameters.set_sep();
 	  ESOptimizer<RSVMSurrogateStrategy<IPOPCMAStrategy,ACovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -95,6 +128,9 @@ namespace libcmaes
 	{
 	  parameters.set_sep();
 	  ESOptimizer<RSVMSurrogateStrategy<BIPOPCMAStrategy,ACovarianceUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -103,6 +139,9 @@ namespace libcmaes
 	{
 	  parameters.set_vd();
 	  ESOptimizer<RSVMSurrogateStrategy<CMAStrategy,VDCMAUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -111,6 +150,9 @@ namespace libcmaes
 	{
 	  parameters.set_vd();
 	  ESOptimizer<RSVMSurrogateStrategy<IPOPCMAStrategy,VDCMAUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();
@@ -119,6 +161,9 @@ namespace libcmaes
 	{
 	  parameters.set_vd();
 	  ESOptimizer<RSVMSurrogateStrategy<BIPOPCMAStrategy,VDCMAUpdate>,CMAParameters<>> optim(func,parameters);
+          if (niters > 0) {
+            optim._rsvm_iter = niters;
+          }
           optim.set_progress_func(pfunc);
 	  optim.optimize();
 	  return optim.get_solutions();

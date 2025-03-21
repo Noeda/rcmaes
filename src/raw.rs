@@ -21,6 +21,7 @@ extern "C" {
             extern "C" fn(*const c_void, *const *const c_void, *const *const c_void, size_t) -> (),
         >,
         wait_until_dead: Option<extern "C" fn(*const c_void) -> ()>,
+        n_iters_rsvm_surrogates: c_int,
         userdata: *const c_void,
     );
 

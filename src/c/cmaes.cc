@@ -1,5 +1,7 @@
+#include <typeinfo>
 #include <vector>
 #include "libcmaes/cmaes.h"
+#include "libcmaes/surrogatestrategy.h"
 #include "libcmaes/surrogates/rankingsvm.hpp"
 #include "libcmaes/surrogates/rsvm_surr_strategy.hpp"
 #include "surrcmaes_glue.h"
@@ -35,6 +37,8 @@ extern "C" {
             void (*wait_until_dead)(void*), // tells Rust to clean up, does not
                                             // return until clean up is done on
                                             // Rust side.
+            int n_iters_rsvm_surrogates,    // Used with RSVM surrogate
+                                            // model.
             void* userdata);
     cmaes_candidates_mvar* cmaes_make_candidates_mvar(void);
     void cmaes_mark_as_dead_mvar(cmaes_candidates_mvar* mvar);
@@ -271,6 +275,7 @@ void cmaes_optimize(
         void (*wait_until_dead)(void*), // tells Rust to clean up, does not
                                         // return until clean up is done on
                                         // Rust side.
+        int n_iters_rsvm_surrogates,
         void* userdata)
 {
     int uses_threaded_candidates = 0;
@@ -412,19 +417,27 @@ void cmaes_optimize(
         cmaparams.set_elitism(1);
     }
 
-    std::vector<double> out;
-    if ( use_surrogates ) {
-        CMASolutions cmasols = surrcmaes<>(fit, cmaparams, pfunc);
-        cmasols.sort_candidates();
-        out = cmasols.best_candidate().get_x();
-    } else {
-        CMASolutions cmasols = cmaes<>(fit, cmaparams, pfunc);
-        cmasols.sort_candidates();
-        out = cmasols.best_candidate().get_x();
-    }
-
-    for ( uint64_t i1 = 0; i1 < num_coords; ++i1 ) {
-        initial[i1] = out[i1];
+    try {
+        std::vector<double> out;
+        if ( use_surrogates == 1) {
+            CMASolutions cmasols = surrcmaes_rsvm<>(fit, cmaparams, pfunc, n_iters_rsvm_surrogates);
+            cmasols.sort_candidates();
+            out = cmasols.best_candidate().get_x();
+        } else if ( use_surrogates == 0 ) {
+            CMASolutions cmasols = cmaes<>(fit, cmaparams, pfunc);
+            cmasols.sort_candidates();
+            out = cmasols.best_candidate().get_x();
+        } else {
+            fprintf(stderr, "IMPOSSIBLE: Invalid surrogates option\n");
+            assert(0);
+        }
+        for ( uint64_t i1 = 0; i1 < num_coords; ++i1 ) {
+            initial[i1] = out[i1];
+        }
+    } catch (const std::exception& e) {
+        const std::type_info& t = typeid(e);
+        fprintf(stderr, "Uncaught C++ Exception: CMA-ES error: %s - %s\n", t.name(), e.what());
+        exit(1);
     }
 
     pthread_mutex_destroy(&observe_threads_lock);

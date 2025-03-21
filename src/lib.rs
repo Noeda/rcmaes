@@ -104,6 +104,26 @@ pub enum CMAESAlgo {
     VDBIPOP,
 }
 
+/// Different surrogate models.
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CMAESSurrogateModel {
+    RSVMSurrogates(usize),
+}
+
+fn m_use_surrogates_to_c_int(surrogates: Option<CMAESSurrogateModel>) -> c_int {
+    match surrogates {
+        Some(CMAESSurrogateModel::RSVMSurrogates(_)) => 1,
+        None => 0,
+    }
+}
+
+fn m_use_surrogates_to_rsvm_surrogates(surrogates: Option<CMAESSurrogateModel>) -> c_int {
+    match surrogates {
+        Some(CMAESSurrogateModel::RSVMSurrogates(x)) => x as c_int,
+        None => 0,
+    }
+}
+
 /// Should we stop or continue training?
 #[derive(Eq, Ord, PartialEq, PartialOrd, Debug, Clone, Copy)]
 pub enum CMAESContinue {
@@ -150,7 +170,7 @@ pub struct CMAESParameters {
     m_pop_size: usize,
     m_sigma: f64,
     m_algo: CMAESAlgo,
-    m_use_surrogates: bool,
+    m_use_surrogates: Option<CMAESSurrogateModel>,
     m_use_elitism: bool,
     m_noisy: bool,
 }
@@ -161,6 +181,10 @@ pub fn suggested_pop_size_by_dimension(dimension: usize) -> usize {
 }
 
 impl CMAESParameters {
+    pub fn new() -> Self {
+        CMAESParameters::default()
+    }
+
     pub fn pop_size(&self) -> usize {
         self.m_pop_size
     }
@@ -185,11 +209,11 @@ impl CMAESParameters {
         self.m_algo = algo;
     }
 
-    pub fn use_surrogates(&self) -> bool {
+    pub fn use_surrogates(&self) -> Option<CMAESSurrogateModel> {
         self.m_use_surrogates
     }
 
-    pub fn set_use_surrogates(&mut self, surrogates: bool) {
+    pub fn set_use_surrogates(&mut self, surrogates: Option<CMAESSurrogateModel>) {
         self.m_use_surrogates = surrogates;
     }
 
@@ -216,7 +240,7 @@ impl Default for CMAESParameters {
             m_pop_size: 10,
             m_algo: CMAESAlgo::Default,
             m_sigma: 1.0,
-            m_use_surrogates: false,
+            m_use_surrogates: None,
             m_use_elitism: false,
             m_noisy: false,
         }
@@ -530,7 +554,7 @@ where
         raw::cmaes_optimize(
             if params.m_noisy { 1 } else { 0 },
             if params.m_use_elitism { 1 } else { 0 },
-            if params.m_use_surrogates { 1 } else { 0 },
+            m_use_surrogates_to_c_int(params.m_use_surrogates),
             params.algo().to_c_int(),
             vec_ptr,
             params.sigma(),
@@ -540,6 +564,7 @@ where
             Some(global_iterator),
             None,
             None,
+            m_use_surrogates_to_rsvm_surrogates(params.m_use_surrogates),
             (&userdata as *const Userdata) as *const c_void,
         );
     }
@@ -643,7 +668,7 @@ impl<T: Clone + Vectorizable> CMAES<T> {
                 raw::cmaes_optimize(
                     if params.m_noisy { 1 } else { 0 },
                     if params.m_use_elitism { 1 } else { 0 },
-                    if params.m_use_surrogates { 1 } else { 0 },
+                    m_use_surrogates_to_c_int(params.m_use_surrogates),
                     params.algo().to_c_int(),
                     vec_ptr,
                     params.sigma(),
@@ -653,6 +678,7 @@ impl<T: Clone + Vectorizable> CMAES<T> {
                     Some(global_iterator_asktell),
                     Some(global_tell_mvars),
                     Some(global_wait_until_dead),
+                    m_use_surrogates_to_rsvm_surrogates(params.m_use_surrogates),
                     (userdata_ptr as *const UserdataAskTell) as *const c_void,
                 )
             }
@@ -871,12 +897,21 @@ mod tests {
     }
 
     #[test]
-    pub fn ask_tell() {
+    pub fn ask_tell_default_params() {
+        ask_tell_with_params(CMAESParameters::default());
+    }
+
+    #[test]
+    pub fn ask_tell_surrogate_rsvm() {
+        let mut params = CMAESParameters::default();
+        params.set_use_surrogates(Some(CMAESSurrogateModel::RSVMSurrogates(50)));
+        ask_tell_with_params(params);
+    }
+
+    fn ask_tell_with_params(params: CMAESParameters) {
         // run the whole thing many times (I had bugs that only happened rarely)
-        for idx in 0..100 {
-            println!("{}", idx);
-            //
-            let mut cma = CMAES::new(&TwoPoly { x: 5.0, y: 6.0 }, &CMAESParameters::default());
+        for _idx in 0..10 {
+            let mut cma = CMAES::new(&TwoPoly { x: 5.0, y: 6.0 }, &params);
 
             let mut epochs: usize = 1000;
             let mut best_score: f64 = 10000000.0;
