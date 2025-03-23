@@ -73,8 +73,12 @@ pub struct PyCMAESSettings {
 
 #[derive(Clone, PartialEq, PartialOrd, Debug)]
 pub enum PyCMAESOptimizer {
-    CMA,    // Regular CMA-ES that you get from import CMA
-    VkDCMA, // VkD CMA-ES
+    CMA,         // Regular CMA-ES that you get from import CMA
+    VkDCMA,      // VkD CMA-ES
+    CMAOther,    // CMA-ES from CyberAgentAILab/cmaes instead of 'cma'
+    LRACMAOther, // LRACMA-ES from CyberAgentAILab/cmaes instead of 'cma'
+    XNESOther,
+    DXNESICOther,
 }
 
 impl PyCMAESOptimizer {
@@ -82,6 +86,10 @@ impl PyCMAESOptimizer {
         match self {
             PyCMAESOptimizer::CMA => "CMA",
             PyCMAESOptimizer::VkDCMA => "VkDCMA",
+            PyCMAESOptimizer::CMAOther => "CMAOther",
+            PyCMAESOptimizer::LRACMAOther => "LRACMAOther",
+            PyCMAESOptimizer::XNESOther => "XNESOther",
+            PyCMAESOptimizer::DXNESICOther => "DXNESICOther",
         }
     }
 }
@@ -262,13 +270,59 @@ import cma
 import cma.sigma_adaptation
 from cma import restricted_gaussian_sampler as rgs
 import numpy as np
+import numpy.linalg as la
+import math
+
+# This is an entirely different CMA-ES implementation, also in Python.
+try:
+    import cmaes as cma_that_other_library
+except ImportError:
+    cma_that_other_library = None
 
 class Opt:
     def __init__(self, cmaes):
         self.cmaes = cmaes
         self.never_stop = False
+        self.is_other_cma = False
+        self.dead = False
+
+    def should_stop(self):
+        if self.dead:
+            return True
+        if not self.never_stop:
+            return False
+
+        if getattr(self.cmaes, 'should_stop', None) is None:
+            return self.cmaes.should_stop()
+        elif getattr(self.cmaes, 'stop', None) is None:
+            return self.cmaes.stop()
+        else:
+            assert False, "Optimizer has no stop() or should_stop()"
+
+    def ask(self):
+        if not self.is_other_cma:
+            cands = self.cmaes.ask()
+            return list(map(list, cands))
+        else:
+            # The other library doesn't give all candidates right away
+            result = []
+            for _ in range(self.cmaes.population_size):
+                item = list(self.cmaes.ask())
+                for x in item:
+                    if math.isnan(x):
+                        self.dead = True
+                        return []
+                result.append(list(self.cmaes.ask()))
+            return result
 
 def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None, use_adapt_sigma_tpa=False, never_stop=False):
+    if optimizer_name == 'CMAOther' or optimizer_name == 'LRACMAOther' or optimizer_name == 'XNESOther' or optimizer_name == 'DXNESICOther':
+        if use_adapt_sigma_tpa:
+            raise ValueError("Cannot use adapt sigma TPA with CMAOther")
+
+        use_lra = optimizer_name == 'LRACMAOther'
+        return make_cmaes_other(optimizer_name, initial, sigma, population_size, never_stop, use_lra)
+
     opts = cma.CMAOptions()
     if active is not None:
         opts.set('CMA_active', active)
@@ -288,17 +342,37 @@ def make_cmaes(initial, sigma, optimizer_name, population_size=None, active=None
     result.never_stop = never_stop
     return result
 
-def ask(optimizer):
-    if not optimizer.never_stop and optimizer.cmaes.stop():
-        return []
-    result = optimizer.cmaes.ask()
-    result = list(map(list, result))
+def make_cmaes_other(optimizer_name, initial, sigma, population_size, never_stop, use_lra):
+    if optimizer_name == 'XNESOther':
+        result = Opt(cmaes=cma_that_other_library.XNES(mean=initial, sigma=sigma, population_size=population_size))
+    elif optimizer_name == 'DXNESICOther':
+        result = Opt(cmaes=cma_that_other_library.DXNESIC(mean=initial, sigma=sigma, population_size=population_size))
+    else:
+        result = Opt(cmaes=cma_that_other_library.CMA(mean=initial, sigma=sigma, population_size=population_size, lr_adapt=use_lra))
+    result.never_stop = never_stop
+    result.is_other_cma = True
     return result
 
+def ask(optimizer):
+    if optimizer.should_stop():
+        return []
+    return optimizer.ask()
+
 def tell(optimizer, solutions):
-    firsts = [x[0] for x in solutions]
-    seconds = [x[1] for x in solutions]
-    optimizer.cmaes.tell(firsts, seconds)
+    if optimizer.is_other_cma:
+        pr = []
+        for x, y in solutions:
+            pr.append((np.array(x), y))
+        try:
+            optimizer.cmaes.tell(pr)
+        except OverflowError:
+            optimizer.dead = True
+        except la.LinAlgError:
+            optimizer.dead = True
+    else:
+        firsts = [x[0] for x in solutions]
+        seconds = [x[1] for x in solutions]
+        optimizer.cmaes.tell(firsts, seconds)
 
 def inject(optimizer, solutions):
     optimizer.cmaes.inject(solutions)
@@ -307,7 +381,10 @@ def population_size(optimizer):
     return optimizer.cmaes.popsize
 
 def get_sigma(optimizer):
-    return optimizer.cmaes.sigma
+    if optimizer.is_other_cma:
+        return 1
+    else:
+        return optimizer.cmaes.sigma
 "#
 );
 
@@ -359,11 +436,10 @@ mod tests {
 
             solutions.clear();
             for (idx, mut item) in items.into_iter().enumerate() {
+                let score = (A - item.item().x).powi(2)
+                    + B * (item.item().y - item.item().x.powi(2)).powi(2);
                 // Rosenbrock function
-                item.set_score(
-                    (A - item.item().x).powi(2)
-                        + B * (item.item().y - item.item().x.powi(2)).powi(2),
-                );
+                item.set_score(score);
                 if inject && (idx == 12 || idx == 13) && _idx > 50 {
                     item.set_item(TestVector { x: 1.3, y: -1.2 });
                 }
@@ -385,6 +461,30 @@ mod tests {
         test_run(PyCMAESOptimizer::VkDCMA, false, false);
         test_run(PyCMAESOptimizer::CMA, false, true);
         test_run(PyCMAESOptimizer::VkDCMA, false, true);
+    }
+
+    #[test]
+    fn test_cmaes_other() {
+        pyo3::prepare_freethreaded_python();
+        test_run(PyCMAESOptimizer::CMAOther, false, false);
+    }
+
+    #[test]
+    fn test_cmaes_lracma_other() {
+        pyo3::prepare_freethreaded_python();
+        test_run(PyCMAESOptimizer::LRACMAOther, false, false);
+    }
+
+    #[test]
+    fn test_cmaes_xnes_other() {
+        pyo3::prepare_freethreaded_python();
+        test_run(PyCMAESOptimizer::XNESOther, false, false);
+    }
+
+    #[test]
+    fn test_cmaes_dxnesic_other() {
+        pyo3::prepare_freethreaded_python();
+        test_run(PyCMAESOptimizer::DXNESICOther, false, false);
     }
 
     #[test]
