@@ -324,11 +324,11 @@ extern "C" fn global_tell_mvars(
             }
         }
         {
-            let mut ready = (*userdata).mvars_ready_cond.0.lock().unwrap();
+            let mut ready = (&(*userdata).mvars_ready_cond).0.lock().unwrap();
             *ready = true;
         }
-        let _mrc = (*userdata).mvars_ready_cond.0.lock().unwrap();
-        (*userdata).mvars_ready_cond.1.notify_all();
+        let _mrc = (&(*userdata).mvars_ready_cond).0.lock().unwrap();
+        (&(*userdata).mvars_ready_cond).1.notify_all();
     }
 }
 
