@@ -8,6 +8,7 @@ pub mod raw;
 pub mod ball_descend;
 pub mod cosyne;
 pub mod mapelites;
+#[cfg(feature = "pycmaes")]
 pub mod pycmaes;
 pub mod trending_down_test;
 pub mod vectorizable;
