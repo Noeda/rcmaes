@@ -2,6 +2,13 @@ extern crate cc;
 
 fn main() {
     let mut cc_build = cc::Build::new();
+
+    // Just guessing so many paths is kinda messed up.
+    // One day if I re-implement this library (rcmaes) in Rust,
+    // I'd probably go and do this more properly. This is a result
+    // of laziness, and then adding more paths as time marches on
+    // and the code breaks.
+
     cc_build
         .cpp(true)
         .file("src/c/cmaes.cc")
@@ -14,6 +21,10 @@ fn main() {
         .flag("-I/opt/homebrew/Cellar/eigen/3.3.9/include/eigen3")
         .flag("-I/opt/homebrew/Cellar/eigen/3.4.0_1/include/eigen3")
         .flag("-std=c++11");
+
+    if let Ok(value) = std::env::var("HOME") {
+        cc_build.flag(format!("-I{}/.local/include", value));
+    }
 
     cc_build.compile("librcmaesglue.a");
     println!("cargo:rustc-link-lib=dylib=cmaes");
