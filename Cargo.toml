@@ -17,6 +17,7 @@ pyo3 = { version = "0.25", features = ["auto-initialize"], optional = true }
 
 [build-dependencies]
 cc = "1.0"
+pkg-config = "0.3"
 
 [features]
 default = ["pycmaes"]
